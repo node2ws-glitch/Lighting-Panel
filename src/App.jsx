@@ -74,7 +74,7 @@ function DashboardApp({user,onLogout}){
 
 function RealServersPage({announce,user}){
  const [servers,setServers]=useState([]),[nodes,setNodes]=useState([]),[loading,setLoading]=useState(true),[error,setError]=useState(''),[saving,setSaving]=useState(false),[query,setQuery]=useState(''),[show,setShow]=useState(false);
- const [form,setForm]=useState({name:'',node_id:'',version:'LATEST',memory_mb:2048,cpu_limit:2});
+ const [form,setForm]=useState({name:'',node_id:'',owner_email:'',version:'LATEST',memory_mb:2048,cpu_limit:2});
  const [selectedServer,setSelectedServer]=useState(null);
  async function refresh(){
   try{const [serverRows,nodeRows]=await Promise.all([listServers(),user?.role==='admin'?listNodes():Promise.resolve([])]);setServers(serverRows);setNodes(nodeRows);setError('');}
@@ -85,7 +85,7 @@ function RealServersPage({announce,user}){
  const filtered=servers.filter(s=>s.name.toLowerCase().includes(query.toLowerCase()));
  async function submit(e){
   e.preventDefault();setSaving(true);setError('');
-  try{await createGameServer({...form,node_id:Number(form.node_id),memory_mb:Number(form.memory_mb),cpu_limit:Number(form.cpu_limit)});setShow(false);setForm({name:'',node_id:'',version:'LATEST',memory_mb:2048,cpu_limit:2});await refresh();announce('Server provisioning queued on VPS node');}
+  try{await createGameServer({...form,node_id:Number(form.node_id),memory_mb:Number(form.memory_mb),cpu_limit:Number(form.cpu_limit)});setShow(false);setForm({name:'',node_id:'',owner_email:'',version:'LATEST',memory_mb:2048,cpu_limit:2});await refresh();announce('Server provisioning queued on VPS node');}
   catch(e){setError(e.message);}
   finally{setSaving(false);}
  }
@@ -102,6 +102,7 @@ function RealServersPage({announce,user}){
   {error&&<div className="auth-error">{error}</div>}
   {show&&user?.role==='admin'&&<form className="user-create-form" onSubmit={submit}><h3>Deploy Minecraft Java server</h3><div className="user-form-grid">
    <input placeholder="Server name" minLength="3" maxLength="48" value={form.name} onChange={e=>setForm({...form,name:e.target.value})} required/>
+   <input type="email" placeholder="Customer email (optional — assign ownership)" value={form.owner_email} onChange={e=>setForm({...form,owner_email:e.target.value})}/>
    <select value={form.node_id} onChange={e=>setForm({...form,node_id:e.target.value})} required><option value="">Choose online node</option>{nodes.filter(n=>n.is_enabled&&online(n)).map(n=><option key={n.id} value={n.id}>{n.name} · {n.fqdn}</option>)}</select>
    <select value={form.version} onChange={e=>setForm({...form,version:e.target.value})}><option value="LATEST">Latest Minecraft</option><option value="1.21.4">1.21.4</option><option value="1.21.1">1.21.1</option><option value="1.20.4">1.20.4</option></select>
    <select value={form.memory_mb} onChange={e=>setForm({...form,memory_mb:Number(e.target.value)})}><option value={1024}>1 GB RAM</option><option value={2048}>2 GB RAM</option><option value={4096}>4 GB RAM</option><option value={6144}>6 GB RAM</option><option value={8192}>8 GB RAM</option></select>
