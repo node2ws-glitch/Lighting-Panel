@@ -4,11 +4,7 @@ import { currentUser, clearToken, logout, listUsers, createUser, setUserStatus, 
 import { motion, AnimatePresence } from 'framer-motion';
 import { Activity, ArrowDownToLine, ArrowUpRight, Bell, Box, ChartNoAxesCombined, ChevronDown, CircleHelp, Command, Cpu, Database, FileText, Gamepad2, Gauge, HardDrive, LayoutDashboard, LifeBuoy, LogOut, Menu, MoreHorizontal, Network, Plus, Search, Server, Settings, ShieldCheck, Terminal, Users, Wallet, Wifi, X, Zap } from 'lucide-react';
 
-const initialServers = [
- {id:'srv-01',name:'Legacy SMP',game:'Minecraft Java',node:'Pune • Node-01',status:'Online',cpu:38,ram:62,disk:41,players:'18 / 100',address:'play.legacymc.net:25565',color:'violet'},
- {id:'srv-02',name:'Lighting Lifesteal',game:'Minecraft Java',node:'Mumbai • Node-02',status:'Online',cpu:21,ram:44,disk:28,players:'7 / 80',address:'lifesteal.lightingmc.net:25565',color:'cyan'},
- {id:'srv-03',name:'Community Bot',game:'Python Application',node:'Pune • Node-01',status:'Offline',cpu:0,ram:0,disk:12,players:'—',address:'Application container',color:'orange'}
-];
+const initialServers = [];
 const nav = [
  {title:'OVERVIEW',items:[['Dashboard',LayoutDashboard],['Servers',Server],['Databases',Database],['Backups',HardDrive]]},
  {title:'MANAGEMENT',items:[['Users',Users],['Nodes',Network],['Allocations',Box],['Activity Logs',FileText]]},
@@ -17,7 +13,35 @@ const nav = [
 function Meter({value,color='purple'}) { return <div className="meter"><span className={color} style={{width:value+'%'}}/></div>; }
 function Stat({icon:Icon,label,value,detail,trend}) { return <div className="stat-card"><div className="stat-top"><span className="stat-icon"><Icon size={17}/></span><span className="stat-trend">{trend}</span></div><div className="stat-value">{value}</div><div className="stat-label">{label}</div><div className="stat-detail">{detail}</div></div>; }
 function DashboardApp({user,onLogout}){
- const [page,setPage]=useState('Dashboard'); const [servers,setServers]=useState(initialServers); const [selected,setSelected]=useState('srv-01'); const [query,setQuery]=useState(''); const [sidebar,setSidebar]=useState(false); const [notice,setNotice]=useState(''); const [showCreate,setShowCreate]=useState(false); const [newName,setNewName]=useState('');
+ const [page,setPage]=useState('Dashboard'); const [servers,setServers]=useState(initialServers); const [nodes,setNodes]=useState([]); const [selected,setSelected]=useState(null); const [query,setQuery]=useState(''); const [sidebar,setSidebar]=useState(false); const [notice,setNotice]=useState(''); const [showCreate,setShowCreate]=useState(false); const [newName,setNewName]=useState('');
+ useEffect(()=>{
+  let alive=true;
+  const load=async()=>{
+   try{
+    const [rows,nodeRows]=await Promise.all([listServers(),listNodes()]);
+    if(!alive)return;
+    setNodes(nodeRows);
+    const byId=new Map(nodeRows.map(n=>[n.id,n]));
+    setServers(rows.map(server=>{
+     const node=byId.get(server.node_id);
+     const memoryTotal=node?.memory_total||0;
+     return {id:String(server.id),name:server.name,game:'Minecraft Java',node:node?.name||'Unknown node',
+      status:server.status==='online'?'Online':server.status.charAt(0).toUpperCase()+server.status.slice(1),
+      cpu:node?.cpu_percent||0,ram:memoryTotal?Math.min(100,Math.round(server.memory_mb*1048576/memoryTotal*100)):0,
+      disk:0,players:'—',address:(node?.fqdn||'node')+':'+server.allocation_port,color:'violet'};
+    }));
+   }catch(error){if(alive)setNotice(error.message);}
+  };
+  load();const timer=setInterval(load,12000);
+  return()=>{alive=false;clearInterval(timer);};
+ },[]);
+ const totalMemory=nodes.reduce((sum,n)=>sum+n.memory_total,0);
+ const usedMemory=nodes.reduce((sum,n)=>sum+n.memory_used,0);
+ const totalDisk=nodes.reduce((sum,n)=>sum+n.disk_total,0);
+ const usedDisk=nodes.reduce((sum,n)=>sum+n.disk_used,0);
+ const averageCpu=nodes.length?nodes.reduce((sum,n)=>sum+n.cpu_percent,0)/nodes.length:0;
+ const memoryPercent=totalMemory?Math.min(100,Math.round(usedMemory/totalMemory*100)):0;
+ const diskPercent=totalDisk?Math.min(100,Math.round(usedDisk/totalDisk*100)):0;
  const active=servers.find(s=>s.id===selected)||servers[0];
  const filtered=useMemo(()=>servers.filter(s=>s.name.toLowerCase().includes(query.toLowerCase())),[servers,query]);
  const announce=(msg)=>{setNotice(msg);setTimeout(()=>setNotice(''),2600)};
