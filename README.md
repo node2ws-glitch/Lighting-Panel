@@ -19,6 +19,12 @@ The server list, deployment form and lifecycle controls use the real API and nod
 
 This is an early single-node runtime, not yet a production-hardened Pterodactyl replacement. The dashboard overview uses live server, node-capacity and audit API data. Host CPU is reported at node level; per-container CPU/RAM telemetry and automatic container health reconciliation are not yet implemented. Console streaming, file manager/SFTP, backups, schedules, database provisioning, multi-allocation management, per-customer permissions, billing, disk quotas, image update policy, firewall automation and token rotation remain future phases. Do not expose this deployment to untrusted tenants until the remaining isolation and operational controls are implemented.
 
+## Phase 6 — Console and file manager
+
+The server workspace now includes an authenticated Minecraft command console, recent container log output, and a browser file manager. File operations are queued to the owning node agent and run only inside the server's `/data` volume. The web editor supports list/read/write/create-folder/rename/delete and upload/download for files up to 512 KiB. Paths are resolved against the server data directory to reject traversal outside the volume; symlink entries are not exposed.
+
+Console log refresh uses short polling through the node task queue (not a WebSocket stream). The node agent must be updated and restarted on each VPS to execute the new `console`, `console_logs`, and `file_*` task types. SFTP credentials and a dedicated SFTP service are not implemented yet; use the browser file manager for small files and wait for the SFTP phase for large transfers.
+
 ## Requirements
 
 - Node.js 22.12+ (or a supported current LTS)
