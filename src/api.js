@@ -52,3 +52,8 @@ export const getServerAccess = (id) => request('/admin/servers/' + id + '/access
 export const listServerMembers = (id) => request('/admin/servers/' + id + '/members');
 export const addServerMember = (id, payload) => request('/admin/servers/' + id + '/members', { method: 'POST', body: JSON.stringify(payload) });
 export const removeServerMember = (id, memberId) => request('/admin/servers/' + id + '/members/' + memberId, { method: 'DELETE' });
+
+export const getBillingSummary = () => request('/billing/me');
+export const startBillingCheckout = () => request('/billing/checkout', { method: 'POST' });
+export const openBillingPortal = () => request('/billing/portal', { method: 'POST' });
+export const getOperationalMetrics = () => request('/admin/metrics');
