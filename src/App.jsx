@@ -135,7 +135,7 @@ function ServerWorkspace({server,onClose,announce,user}){
   let alive=true;
   const tick=async()=>{try{if(tab==='console')await requestConsoleLogs(server.id);const rows=await listServerTasks(server.id);if(!alive)return;setTasks(rows);const latest=rows.filter(t=>t.action==='console_logs'&&t.status==='completed').at(-1);if(latest?.result?.data?.output)setLogs(latest.result.data.output);}catch(e){if(alive)setError(e.message);}};
   tick();const timer=setInterval(tick,3000);return()=>{alive=false;clearInterval(timer);};
- },[server.id,tab]);
+ },[server.id,tab,access.permissions.join(',')]);
  async function waitTask(taskId){
   for(let i=0;i<30;i++){await new Promise(resolve=>setTimeout(resolve,700));const rows=await listServerTasks(server.id);setTasks(rows);const task=rows.find(t=>t.id===taskId);if(task&&(task.status==='completed'||task.status==='failed')){const detail=await getServerTask(server.id,taskId);if(task.status==='failed'||detail.result?.error)throw new Error(detail.result?.error||'Node operation failed');return detail.result?.data||{};}}
   throw new Error('Node did not respond in time. Check the node agent service.');
