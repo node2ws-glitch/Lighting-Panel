@@ -17,7 +17,7 @@ Lighting Panel is an independent game-server hosting control plane with a dark, 
 
 The server list, deployment form and lifecycle controls use the real API and node task queue. A connected Linux node with Docker Engine and the current agent can provision Minecraft Java (Paper) containers. Provisioning is asynchronous: the node pulls the Minecraft image and reports completion to the panel.
 
-This is an early single-node runtime, not yet a production-hardened Pterodactyl replacement. Console streaming, file manager/SFTP, backups, schedules, database provisioning, multi-allocation management, per-customer permissions, billing, disk quotas, image update policy, firewall automation, token rotation and comprehensive container health reconciliation remain future phases. The dashboard overview still contains sample analytics and needs to be connected to live aggregate metrics. Do not expose this deployment to untrusted tenants until the remaining isolation and operational controls are implemented.
+This is an early single-node runtime, not yet a production-hardened Pterodactyl replacement. The dashboard overview uses live server, node-capacity and audit API data. Host CPU is reported at node level; per-container CPU/RAM telemetry and automatic container health reconciliation are not yet implemented. Console streaming, file manager/SFTP, backups, schedules, database provisioning, multi-allocation management, per-customer permissions, billing, disk quotas, image update policy, firewall automation and token rotation remain future phases. Do not expose this deployment to untrusted tenants until the remaining isolation and operational controls are implemented.
 
 ## Requirements
 
