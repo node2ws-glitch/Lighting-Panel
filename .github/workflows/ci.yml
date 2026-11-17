@@ -27,3 +27,16 @@ jobs:
       - run: pip install -r requirements.txt
       - run: SECRET_KEY=ci-only-secret-key-with-at-least-32-bytes DATABASE_URL=sqlite:///./test.db pytest -q
       - run: SECRET_KEY=ci-only-secret-key-with-at-least-32-bytes DATABASE_URL=sqlite:///./migration.db alembic upgrade head
+
+  node-agent:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: node-agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python -m compileall -q .
