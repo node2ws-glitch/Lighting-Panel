@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     stripe_webhook_secret: str | None = None
     stripe_price_id: str | None = None
     rate_limit_per_minute: int = 180
+    allowed_hosts: str = '*'
 
     @field_validator('secret_key')
     @classmethod
@@ -23,6 +24,10 @@ class Settings(BaseSettings):
         if len(value.encode()) < 32 or value == 'REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES':
             raise ValueError('SECRET_KEY must be a unique random value of at least 32 bytes')
         return value
+
+    @property
+    def allowed_host_list(self) -> list[str]:
+        return [host.strip() for host in self.allowed_hosts.split(',') if host.strip()]
 
     @property
     def cors_origin_list(self) -> list[str]:
