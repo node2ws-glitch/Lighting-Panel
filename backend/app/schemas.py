@@ -28,3 +28,27 @@ class TokenResponse(BaseModel):
 
 class MessageResponse(BaseModel):
     message: str
+
+class NodeCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=80, pattern=r'^[a-zA-Z0-9_.-]+$')
+    fqdn: str = Field(min_length=3, max_length=255)
+
+class NodeRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    name: str
+    fqdn: str
+    is_enabled: bool
+    cpu_percent: float
+    memory_total: int
+    memory_used: int
+    disk_total: int
+    disk_used: int
+    last_heartbeat: datetime | None
+
+class NodeHeartbeat(BaseModel):
+    cpu_percent: float = Field(ge=0, le=100)
+    memory_total: int = Field(ge=0)
+    memory_used: int = Field(ge=0)
+    disk_total: int = Field(ge=0)
+    disk_used: int = Field(ge=0)
