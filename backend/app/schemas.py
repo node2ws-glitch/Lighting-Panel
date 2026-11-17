@@ -97,3 +97,11 @@ class MinecraftAction(BaseModel):
     action: Literal['list','whitelist_add','whitelist_remove','op','deop','difficulty','gamemode','time','weather','save_all']
     player: str | None = Field(default=None, min_length=3, max_length=16, pattern=r'^[A-Za-z0-9_]{3,16}$')
     value: str | None = Field(default=None, max_length=24)
+
+ 
+class BackupAction(BaseModel):
+    action: Literal['create','list','restore']
+    backup_id: str | None = Field(default=None, pattern=r'^\d{8}T\d{6}Z-[a-f0-9]{10}$')
+
+class VersionUpgrade(BaseModel):
+    version: str = Field(min_length=5, max_length=16, pattern=r'^\d+\.\d+(\.\d+)?$')
