@@ -9,7 +9,7 @@ from app.audit import record_event
 from app.database import get_db
 from app.dependencies import get_current_user, require_admin
 from app.models import AuditEvent, GameServer, Node, NodeTask, User
-from app.schemas import LoginRequest, MessageResponse, NodeCreate, NodeHeartbeat, NodeRead, NodeTaskResult, ServerAction, ServerCreate, ServerRead, TokenResponse, UserCreate, UserRead, ConsoleCommand, ServerFileRequest
+from app.schemas import LoginRequest, MessageResponse, NodeCreate, NodeHeartbeat, NodeRead, NodeTaskResult, ServerAction, ServerCreate, ServerRead, TokenResponse, UserCreate, UserRead, ConsoleCommand, ServerFileRequest, MinecraftAction
 from app.security import DUMMY_HASH, create_access_token, hash_password, verify_password
 
 router = APIRouter()
@@ -287,6 +287,46 @@ def operate_server_files(server_id: int, payload: ServerFileRequest, actor: User
     db.commit()
     db.refresh(task)
     return {'task_id':task.id,'status':task.status}
+
+
+@router.post('/admin/servers/{server_id}/minecraft/action', status_code=status.HTTP_202_ACCEPTED)
+def minecraft_action(server_id: int, payload: MinecraftAction, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    server, node = get_managed_server(server_id, db)
+    action = payload.action
+    if action in ('whitelist_add', 'whitelist_remove', 'op', 'deop'):
+        if not payload.player:
+            raise HTTPException(status_code=422, detail='A valid Minecraft username is required')
+        command = {
+            'whitelist_add': 'whitelist add ' + payload.player,
+            'whitelist_remove': 'whitelist remove ' + payload.player,
+            'op': 'op ' + payload.player,
+            'deop': 'deop ' + payload.player,
+        }[action]
+    elif action == 'difficulty':
+        if payload.value not in ('peaceful', 'easy', 'normal', 'hard'):
+            raise HTTPException(status_code=422, detail='Choose peaceful, easy, normal, or hard')
+        command = 'difficulty ' + payload.value
+    elif action == 'gamemode':
+        if payload.value not in ('survival', 'creative', 'adventure', 'spectator'):
+            raise HTTPException(status_code=422, detail='Choose a supported game mode')
+        command = 'gamemode ' + payload.value
+    elif action == 'time':
+        if payload.value not in ('day', 'noon', 'night', 'midnight'):
+            raise HTTPException(status_code=422, detail='Choose day, noon, night, or midnight')
+        command = 'time set ' + payload.value
+    elif action == 'weather':
+        if payload.value not in ('clear', 'rain', 'thunder'):
+            raise HTTPException(status_code=422, detail='Choose clear, rain, or thunder')
+        command = 'weather ' + payload.value
+    else:
+        command = {'list': 'list', 'save_all': 'save-all flush'}[action]
+    task = NodeTask(node_id=node.id, server_id=server.id, action='console',
+        payload=json.dumps({'server_id':server.id,'command':command}))
+    db.add(task)
+    record_event(db, 'admin.server.minecraft.' + action, actor, f'Queued Minecraft action for server {server.id}')
+    db.commit()
+    db.refresh(task)
+    return {'task_id':task.id,'status':task.status,'command':command}
 
 @router.get('/admin/servers/{server_id}/tasks')
 def list_server_tasks(server_id: int, _: User = Depends(require_admin), db: Session = Depends(get_db)):
