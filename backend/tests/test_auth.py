@@ -242,3 +242,54 @@ def test_admin_can_assign_server_to_customer_owner():
     assert visible.status_code == 200 and visible.json()[0]['id'] == created.json()['id']
     assert client.get('/api/v1/admin/servers/' + str(created.json()['id']) + '/access', headers=owner_headers).json()['is_owner'] is True
     assert client.post('/api/v1/admin/servers', headers=owner_headers, json={'name':'Forbidden','node_id':enrolled['node']['id']}).status_code == 403
+
+def test_phase_ten_readiness_metrics_and_security_headers():
+    response=client.get('/api/v1/health/live')
+    assert response.status_code==200 and response.json()['status']=='alive'
+    ready=client.get('/api/v1/health/ready')
+    assert ready.status_code==200 and ready.json()['database']=='connected'
+    assert response.headers.get('x-content-type-options')=='nosniff'
+    assert response.headers.get('x-frame-options')=='DENY'
+    login=client.post('/api/v1/auth/login',json={'email':'admin@example.com','password':'Correct-Horse-123!'}).json()
+    headers={'Authorization':'Bearer '+login['access_token']}
+    metrics=client.get('/api/v1/admin/metrics',headers=headers)
+    assert metrics.status_code==200
+    assert metrics.json()['servers']['total']==0
+    assert metrics.json()['tasks']['pending']==0
+    assert client.get('/api/v1/admin/metrics').status_code==401
+
+
+def test_billing_summary_is_private_and_checkout_requires_configuration(monkeypatch):
+    from types import SimpleNamespace
+    import app.billing as billing
+    monkeypatch.setattr(billing,'get_settings',lambda:SimpleNamespace(stripe_secret_key=None,stripe_price_id=None))
+    login=client.post('/api/v1/auth/login',json={'email':'admin@example.com','password':'Correct-Horse-123!'}).json()
+    headers={'Authorization':'Bearer '+login['access_token']}
+    summary=client.get('/api/v1/billing/me',headers=headers)
+    assert summary.status_code==200
+    assert summary.json()['subscription']['status']=='not_subscribed'
+    assert summary.json()['invoices']==[]
+    assert client.get('/api/v1/billing/me').status_code==401
+    checkout=client.post('/api/v1/billing/checkout',headers=headers)
+    assert checkout.status_code==503
+
+
+def test_stripe_webhook_signature_and_event_idempotency(monkeypatch):
+    import hashlib
+    import hmac
+    import json
+    import time
+    from types import SimpleNamespace
+    import app.billing as billing
+    secret='whsec_test_phase_ten'
+    monkeypatch.setattr(billing,'get_settings',lambda:SimpleNamespace(stripe_webhook_secret=secret))
+    payload=json.dumps({'id':'evt_phase10_once','type':'customer.updated','data':{'object':{'id':'cus_test'}}},separators=(',',':')).encode()
+    timestamp=int(time.time())
+    digest=hmac.new(secret.encode(),str(timestamp).encode()+b'.'+payload,hashlib.sha256).hexdigest()
+    signature=f't={timestamp},v1={digest}'
+    first=client.post('/api/v1/billing/webhook',content=payload,headers={'Stripe-Signature':signature,'Content-Type':'application/json'})
+    assert first.status_code==200 and first.json()['duplicate'] is False
+    second=client.post('/api/v1/billing/webhook',content=payload,headers={'Stripe-Signature':signature,'Content-Type':'application/json'})
+    assert second.status_code==200 and second.json()['duplicate'] is True
+    invalid=client.post('/api/v1/billing/webhook',content=payload,headers={'Stripe-Signature':'t=1,v1=bad'})
+    assert invalid.status_code==400
