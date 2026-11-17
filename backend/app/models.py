@@ -40,3 +40,31 @@ class Node(Base):
     disk_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+class GameServer(Base):
+    __tablename__ = 'game_servers'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    node_id: Mapped[int] = mapped_column(ForeignKey('nodes.id', ondelete='CASCADE'), nullable=False, index=True)
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    name: Mapped[str] = mapped_column(String(48), nullable=False)
+    game: Mapped[str] = mapped_column(String(24), default='minecraft', nullable=False)
+    version: Mapped[str] = mapped_column(String(24), default='LATEST', nullable=False)
+    memory_mb: Mapped[int] = mapped_column(Integer, nullable=False)
+    cpu_limit: Mapped[float] = mapped_column(default=1.0, nullable=False)
+    allocation_port: Mapped[int] = mapped_column(Integer, unique=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default='installing', nullable=False)
+    docker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+class NodeTask(Base):
+    __tablename__ = 'node_tasks'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    node_id: Mapped[int] = mapped_column(ForeignKey('nodes.id', ondelete='CASCADE'), nullable=False, index=True)
+    server_id: Mapped[int | None] = mapped_column(ForeignKey('game_servers.id', ondelete='SET NULL'), nullable=True)
+    action: Mapped[str] = mapped_column(String(24), nullable=False)
+    payload: Mapped[str] = mapped_column(Text, default='{}', nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default='pending', nullable=False, index=True)
+    result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
