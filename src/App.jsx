@@ -117,7 +117,8 @@ function RealServersPage({announce}){
 function ServerWorkspace({server,onClose,announce}){
  const [tab,setTab]=useState('console'),[tasks,setTasks]=useState([]),[logs,setLogs]=useState('Waiting for node console output…'),[command,setCommand]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('');
  const [path,setPath]=useState('.'),[entries,setEntries]=useState([]),[filePath,setFilePath]=useState(''),[fileText,setFileText]=useState('');
- const [backups,setBackups]=useState([]),[versionChoice,setVersionChoice]=useState(server.version==='LATEST'?'1.21.11':server.version);\n const [player,setPlayer]=useState(''),[difficulty,setDifficulty]=useState('normal'),[gameMode,setGameMode]=useState('survival'),[worldTime,setWorldTime]=useState('day'),[weather,setWeather]=useState('clear');
+ const [backups,setBackups]=useState([]),[versionChoice,setVersionChoice]=useState(server.version==='LATEST'?'1.21.11':server.version);
+ const [player,setPlayer]=useState(''),[difficulty,setDifficulty]=useState('normal'),[gameMode,setGameMode]=useState('survival'),[worldTime,setWorldTime]=useState('day'),[weather,setWeather]=useState('clear');
  async function refreshTasks(){
   const rows=await listServerTasks(server.id);setTasks(rows);
   const latest=rows.filter(t=>t.action==='console_logs'&&t.status==='completed').at(-1);
