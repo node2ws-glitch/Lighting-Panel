@@ -293,4 +293,17 @@ def list_server_tasks(server_id: int, _: User = Depends(require_admin), db: Sess
     if db.get(GameServer, server_id) is None:
         raise HTTPException(status_code=404, detail='Server not found')
     tasks = db.scalars(select(NodeTask).where(NodeTask.server_id == server_id).order_by(NodeTask.id.desc()).limit(40)).all()
-    return [{'id':t.id,'action':t.action,'status':t.status,'result':json.loads(t.result) if t.result else None,'created_at':t.created_at,'completed_at':t.completed_at} for t in reversed(tasks)]
+    output = []
+    for task in reversed(tasks):
+        result = json.loads(task.result) if task.result else None
+        if result and task.action == 'file_read':
+            result = {'error':result.get('error'),'data':None}
+        output.append({'id':task.id,'action':task.action,'status':task.status,'result':result,'created_at':task.created_at,'completed_at':task.completed_at})
+    return output
+
+@router.get('/admin/servers/{server_id}/tasks/{task_id}')
+def get_server_task(server_id: int, task_id: int, _: User = Depends(require_admin), db: Session = Depends(get_db)):
+    task = db.get(NodeTask, task_id)
+    if task is None or task.server_id != server_id:
+        raise HTTPException(status_code=404, detail='Server task not found')
+    return {'id':task.id,'action':task.action,'status':task.status,'result':json.loads(task.result) if task.result else None,'created_at':task.created_at,'completed_at':task.completed_at}
