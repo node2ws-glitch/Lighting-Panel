@@ -245,17 +245,36 @@ def finish_node_task(task_id: int, payload: NodeTaskResult, x_node_token: str | 
     return {'accepted':True}
 
 
+def server_permissions(server: GameServer, actor: User, db: Session) -> set[str]:
+    if actor.role == 'admin' or server.owner_id == actor.id:
+        return {'server.read','control.console','control.start','control.stop','control.restart','file.read','file.write','backup.read','backup.create','backup.restore','server.manage'}
+    membership = db.scalar(select(ServerSubuser).where(ServerSubuser.server_id == server.id, ServerSubuser.user_id == actor.id))
+    return set(json.loads(membership.permissions)) if membership else set()
+
 def require_server_permission(server_id: int, actor: User, permission: str, db: Session) -> GameServer:
     server = db.get(GameServer, server_id)
     if server is None:
         raise HTTPException(status_code=404, detail='Server not found')
-    if actor.role == 'admin' or server.owner_id == actor.id:
-        return server
-    membership = db.scalar(select(ServerSubuser).where(ServerSubuser.server_id == server_id, ServerSubuser.user_id == actor.id))
-    granted = set(json.loads(membership.permissions)) if membership else set()
-    if permission not in granted:
+    if permission not in server_permissions(server, actor, db):
         raise HTTPException(status_code=403, detail='You do not have permission to perform this action')
     return server
+
+def task_permission(task: NodeTask) -> str:
+    if task.action in ('console','console_logs'):
+        return 'control.console'
+    if task.action in ('file_list','file_read'):
+        return 'file.read'
+    if task.action.startswith('file_'):
+        return 'file.write'
+    if task.action == 'backup_list':
+        return 'backup.read'
+    if task.action == 'backup_create':
+        return 'backup.create'
+    if task.action == 'backup_restore':
+        return 'backup.restore'
+    if task.action == 'version_upgrade':
+        return 'server.manage'
+    return 'server.read'
 
 def get_managed_server(server_id: int, db: Session, actor: User, permission: str) -> tuple[GameServer, Node]:
     server = require_server_permission(server_id, actor, permission, db)
@@ -386,11 +405,15 @@ def upgrade_server_version(server_id: int, payload: VersionUpgrade, actor: User 
 @router.get('/admin/servers/{server_id}/tasks')
 def list_server_tasks(server_id: int, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     require_server_permission(server_id, actor, 'server.read', db)
+    server = db.get(GameServer, server_id)
+    permissions = server_permissions(server, actor, db)
     tasks = db.scalars(select(NodeTask).where(NodeTask.server_id == server_id).order_by(NodeTask.id.desc()).limit(40)).all()
     output = []
     for task in reversed(tasks):
         result = json.loads(task.result) if task.result else None
-        if result and task.action == 'file_read':
+        if task_permission(task) not in permissions:
+            result = None
+        elif result and task.action == 'file_read':
             result = {'error':result.get('error'),'data':None}
         output.append({'id':task.id,'action':task.action,'status':task.status,'result':result,'created_at':task.created_at,'completed_at':task.completed_at})
     return output
@@ -401,6 +424,8 @@ def get_server_task(server_id: int, task_id: int, actor: User = Depends(get_curr
     task = db.get(NodeTask, task_id)
     if task is None or task.server_id != server_id:
         raise HTTPException(status_code=404, detail='Server task not found')
+    if task_permission(task) not in server_permissions(db.get(GameServer, server_id), actor, db):
+        raise HTTPException(status_code=403, detail='You do not have permission to view this task result')
     return {'id':task.id,'action':task.action,'status':task.status,'result':json.loads(task.result) if task.result else None,'created_at':task.created_at,'completed_at':task.completed_at}
 
 def require_server_owner(server_id: int, actor: User, db: Session) -> GameServer:
