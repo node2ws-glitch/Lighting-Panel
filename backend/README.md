@@ -41,11 +41,18 @@ API docs: http://127.0.0.1:8000/docs
 Keep `.env` private; use a unique high-entropy SECRET_KEY, HTTPS, exact CORS origins, rate limiting at the reverse proxy, and private database networking. Run Alembic migrations as a deployment step. Access tokens expire after 20 minutes by default. Logout currently records an audit event and relies on the client discarding the short-lived token; implement token revocation/refresh tokens before long-lived sessions. Public self-registration is disabled. Never commit production secrets.
 
 
-## VPS nodes
+## VPS nodes and server runtime
 
-- `POST /api/v1/admin/nodes` — administrator creates a node and receives a one-time enrollment token.
-- `GET /api/v1/admin/nodes` — administrator views live telemetry and last heartbeat.
-- `PATCH /api/v1/admin/nodes/{id}/status?is_enabled=false` — disables a node credential.
-- `POST /api/v1/nodes/heartbeat` — node-agent endpoint authenticated with the X-Node-Token header.
+- `POST /api/v1/admin/nodes` — enroll a node and receive a one-time token.
+- `GET /api/v1/admin/nodes` — list node telemetry.
+- `PATCH /api/v1/admin/nodes/{id}/status?is_enabled=false` — disable a node credential.
+- `POST /api/v1/nodes/heartbeat` — authenticated host telemetry.
+- `GET /api/v1/admin/servers` — list server instances.
+- `POST /api/v1/admin/servers` — queue a Minecraft Java deployment on an online node.
+- `POST /api/v1/admin/servers/{id}/action` — queue start, stop, restart or delete.
+- `GET /api/v1/nodes/tasks` — node agent claims pending tasks.
+- `POST /api/v1/nodes/tasks/{id}/result` — node agent reports completion or failure.
 
-The initial node agent reports host CPU, RAM and disk every 15 seconds. It does not have Docker socket access and cannot provision or control containers yet. Install instructions are in ../node-agent/README.md.
+Server provisioning uses a fixed Paper Minecraft image, persistent Docker volume, allocated host TCP port, and configured memory/CPU limits. The node agent only executes the supported task allowlist and checks container ownership labels before lifecycle operations. See ../node-agent/README.md for installation and operational requirements.
+
+The first runtime release is not a full multi-tenant security boundary. Add console/file access permissions, disk quotas, network policy, task idempotency/monitoring, and security review before accepting untrusted customers.
