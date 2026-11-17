@@ -1,4 +1,5 @@
 import hashlib
+import json
 import secrets
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Header, HTTPException, status
@@ -7,8 +8,8 @@ from sqlalchemy.orm import Session
 from app.audit import record_event
 from app.database import get_db
 from app.dependencies import get_current_user, require_admin
-from app.models import AuditEvent, Node, User
-from app.schemas import LoginRequest, MessageResponse, NodeCreate, NodeHeartbeat, NodeRead, TokenResponse, UserCreate, UserRead
+from app.models import AuditEvent, GameServer, Node, NodeTask, User
+from app.schemas import LoginRequest, MessageResponse, NodeCreate, NodeHeartbeat, NodeRead, NodeTaskResult, ServerAction, ServerCreate, ServerRead, TokenResponse, UserCreate, UserRead
 from app.security import DUMMY_HASH, create_access_token, hash_password, verify_password
 
 router = APIRouter()
@@ -119,3 +120,101 @@ def set_node_status(node_id: int, is_enabled: bool, actor: User = Depends(requir
     db.commit()
     db.refresh(node)
     return node
+
+def authenticate_node(x_node_token: str | None, db: Session) -> Node:
+    if not x_node_token:
+        raise HTTPException(status_code=401, detail='Node token required')
+    digest = hashlib.sha256(x_node_token.encode()).hexdigest()
+    node = db.scalar(select(Node).where(Node.token_hash == digest))
+    if node is None or not node.is_enabled:
+        raise HTTPException(status_code=401, detail='Invalid or disabled node credential')
+    return node
+
+@router.get('/admin/servers', response_model=list[ServerRead])
+def list_servers(_: User = Depends(require_admin), db: Session = Depends(get_db)):
+    return list(db.scalars(select(GameServer).order_by(GameServer.created_at.desc()).limit(500)).all())
+
+@router.post('/admin/servers', response_model=ServerRead, status_code=status.HTTP_202_ACCEPTED)
+def create_server(payload: ServerCreate, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    node = db.get(Node, payload.node_id)
+    if node is None or not node.is_enabled:
+        raise HTTPException(status_code=400, detail='Choose an enabled node')
+    if node.last_heartbeat is None or (datetime.now(timezone.utc) - node.last_heartbeat).total_seconds() > 90:
+        raise HTTPException(status_code=409, detail='Node is offline or has no recent heartbeat')
+    if payload.memory_mb * 1024 * 1024 > node.memory_total - node.memory_used:
+        raise HTTPException(status_code=409, detail='Node does not have enough reported free memory')
+    used = db.scalars(select(GameServer.allocation_port)).all()
+    port = next((p for p in range(25565, 26000) if p not in set(used)), None)
+    if port is None:
+        raise HTTPException(status_code=409, detail='No free Minecraft allocations remain')
+    server = GameServer(node_id=node.id, owner_id=actor.id, name=payload.name.strip(), version=payload.version,
+        memory_mb=payload.memory_mb, cpu_limit=payload.cpu_limit, allocation_port=port, status='installing')
+    db.add(server)
+    db.flush()
+    task = NodeTask(node_id=node.id, server_id=server.id, action='provision',
+        payload=json.dumps({'server_id':server.id,'name':server.name,'version':server.version,'memory_mb':server.memory_mb,'cpu_limit':server.cpu_limit,'port':server.allocation_port}))
+    db.add(task)
+    record_event(db, 'admin.server.create', actor, f'Queued server {server.id} on node {node.name}')
+    db.commit()
+    db.refresh(server)
+    return server
+
+@router.post('/admin/servers/{server_id}/action', response_model=ServerRead, status_code=status.HTTP_202_ACCEPTED)
+def server_action(server_id: int, payload: ServerAction, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    server = db.get(GameServer, server_id)
+    if server is None:
+        raise HTTPException(status_code=404, detail='Server not found')
+    node = db.get(Node, server.node_id)
+    if node is None or not node.is_enabled or node.last_heartbeat is None or (datetime.now(timezone.utc)-node.last_heartbeat).total_seconds()>90:
+        raise HTTPException(status_code=409, detail='Server node is offline')
+    if server.status == 'installing':
+        raise HTTPException(status_code=409, detail='Server provisioning is still in progress')
+    if payload.action == 'delete':
+        server.status = 'deleting'
+    elif payload.action in ('start','restart'):
+        server.status = 'starting'
+    else:
+        server.status = 'stopping'
+    db.add(NodeTask(node_id=node.id, server_id=server.id, action=payload.action, payload=json.dumps({'server_id':server.id})))
+    record_event(db, 'admin.server.'+payload.action, actor, f'Queued {payload.action} for server {server.id}')
+    db.commit()
+    db.refresh(server)
+    return server
+
+@router.get('/nodes/tasks')
+def claim_node_tasks(x_node_token: str | None = Header(default=None), db: Session = Depends(get_db)):
+    node = authenticate_node(x_node_token, db)
+    tasks = list(db.scalars(select(NodeTask).where(NodeTask.node_id == node.id, NodeTask.status == 'pending').order_by(NodeTask.id).limit(5)).all())
+    output = []
+    for task in tasks:
+        task.status = 'claimed'
+        output.append({'id':task.id,'server_id':task.server_id,'action':task.action,'payload':json.loads(task.payload)})
+    db.commit()
+    return output
+
+@router.post('/nodes/tasks/{task_id}/result')
+def finish_node_task(task_id: int, payload: NodeTaskResult, x_node_token: str | None = Header(default=None), db: Session = Depends(get_db)):
+    node = authenticate_node(x_node_token, db)
+    task = db.get(NodeTask, task_id)
+    if task is None or task.node_id != node.id or task.status != 'claimed':
+        raise HTTPException(status_code=404, detail='Claimed task not found')
+    task.status = 'failed' if payload.error else 'completed'
+    task.result = json.dumps({'docker_id':payload.docker_id,'error':payload.error})
+    task.completed_at = datetime.now(timezone.utc)
+    if task.server_id:
+        server = db.get(GameServer, task.server_id)
+        if server:
+            server.docker_id = payload.docker_id or server.docker_id
+            server.last_error = payload.error
+            if task.action == 'delete' and not payload.error:
+                db.delete(server)
+            elif payload.error:
+                server.status = 'error'
+            elif task.action == 'stop':
+                server.status = 'offline'
+            elif task.action == 'delete':
+                server.status = 'deleted'
+            else:
+                server.status = 'online'
+    db.commit()
+    return {'accepted':True}
