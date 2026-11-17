@@ -119,6 +119,12 @@ function ServerWorkspace({server,onClose,announce,user}){
  const [path,setPath]=useState('.'),[entries,setEntries]=useState([]),[filePath,setFilePath]=useState(''),[fileText,setFileText]=useState('');
  const [backups,setBackups]=useState([]),[versionChoice,setVersionChoice]=useState(server.version==='LATEST'?'1.21.11':server.version);
  const [player,setPlayer]=useState(''),[difficulty,setDifficulty]=useState('normal'),[gameMode,setGameMode]=useState('survival'),[worldTime,setWorldTime]=useState('day'),[weather,setWeather]=useState('clear');
+ const [access,setAccess]=useState({is_owner:false,permissions:[]}),[members,setMembers]=useState([]),[memberEmail,setMemberEmail]=useState(''),[memberPermissions,setMemberPermissions]=useState(['server.read']),[membersLoading,setMembersLoading]=useState(false);
+ useEffect(()=>{getServerAccess(server.id).then(result=>{setAccess(result);const p=result.permissions||[];if(!p.includes('control.console'))setTab(p.includes('file.read')||p.includes('file.write')?'files':p.some(x=>x.startsWith('backup.'))?'backups':p.includes('server.manage')?'minecraft':'members');}).catch(e=>setError(e.message));},[server.id]);
+ async function refreshMembers(){setMembersLoading(true);try{setMembers(await listServerMembers(server.id));}catch(e){setError(e.message);}finally{setMembersLoading(false);}}
+ async function inviteMember(e){e.preventDefault();setBusy(true);setError('');try{await addServerMember(server.id,{email:memberEmail,permissions:memberPermissions});setMemberEmail('');await refreshMembers();announce('Team member access granted');}catch(e){setError(e.message);}finally{setBusy(false);}}
+ async function revokeMember(id){if(!window.confirm('Revoke this member access to this server?'))return;try{await removeServerMember(server.id,id);await refreshMembers();announce('Team member access revoked');}catch(e){setError(e.message);}}
+ const can=(permission)=>access.permissions.includes(permission);
  async function refreshTasks(){
   const rows=await listServerTasks(server.id);setTasks(rows);
   const latest=rows.filter(t=>t.action==='console_logs'&&t.status==='completed').at(-1);
@@ -187,7 +193,7 @@ function ServerWorkspace({server,onClose,announce,user}){
   for(let i=0;i<bytes.length;i+=0x8000)binary+=String.fromCharCode(...bytes.subarray(i,i+0x8000));
   return btoa(binary);
  }
- useEffect(()=>{if(tab==='files')fileOperation('list');if(tab==='backups')runBackup('list');},[tab,server.id]);
+ useEffect(()=>{if(tab==='files'&&(can('file.read')||can('file.write')))fileOperation('list');if(tab==='backups'&&can('backup.read'))runBackup('list');if(tab==='members'&&access.is_owner)refreshMembers();},[tab,server.id,access.is_owner]);
  const parent=path==='.'?'.':(path.includes('/')?path.split('/').slice(0,-1).join('/')||'.':'.');
  return <section className="server-workspace">
   <div className="workspace-head"><div><div className="eyebrow">SERVER CONTROL · #{server.id}</div><h2>{server.name}</h2><p>Minecraft Java · {server.version} · {server.status}</p></div><button className="button-secondary" onClick={onClose}><X size={15}/> Close</button></div>
