@@ -86,7 +86,10 @@ class ConsoleCommand(BaseModel):
     command: str = Field(min_length=1, max_length=512)
 
 class ServerFileRequest(BaseModel):
-    operation: str = Field(pattern=r'^(list|read|write|mkdir|delete|rename)
+    operation: str = Field(pattern='^(list|read|write|mkdir|delete|rename)
+    path: str = Field(default='.', min_length=1, max_length=512)
+    destination: str | None = Field(default=None, max_length=512)
+    content_base64: str | None = Field(default=None, max_length=1400000)
 )
     path: str = Field(default='.', min_length=1, max_length=512)
     destination: str | None = Field(default=None, max_length=512)
