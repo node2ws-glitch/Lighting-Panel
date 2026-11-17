@@ -60,7 +60,8 @@ def run_task(client, task):
             existing = client.containers.get(name)
             if existing.labels.get(LABEL_OWNER) != 'true' or existing.labels.get('net.lightingpanel.server-id') != str(server_id):
                 raise RuntimeError('Container name collision; refusing to modify an unmanaged container')
-            existing.start()
+            if existing.status != 'running':
+                existing.start()
             return {'docker_id': existing.id}
         except docker.errors.NotFound:
             pass
@@ -89,14 +90,22 @@ def run_task(client, task):
         container = client.containers.get(name)
     except docker.errors.NotFound:
         if action == 'delete':
+            try:
+                volume = client.volumes.get(f'lighting-server-data-{server_id}')
+                if volume.attrs.get('Labels', {}).get(LABEL_OWNER) == 'true':
+                    volume.remove(force=False)
+            except docker.errors.NotFound:
+                pass
             return {'docker_id':None}
         raise RuntimeError('Managed server container does not exist')
     if container.labels.get(LABEL_OWNER) != 'true' or container.labels.get('net.lightingpanel.server-id') != str(server_id):
         raise RuntimeError('Refusing to operate on a container not owned by Lighting Panel')
     if action == 'start':
-        container.start()
+        if container.status != 'running':
+            container.start()
     elif action == 'stop':
-        container.stop(timeout=30)
+        if container.status == 'running':
+            container.stop(timeout=30)
     elif action == 'restart':
         container.restart(timeout=30)
     elif action == 'delete':
