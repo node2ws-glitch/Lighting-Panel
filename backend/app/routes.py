@@ -9,7 +9,7 @@ from app.audit import record_event
 from app.database import get_db
 from app.dependencies import get_current_user, require_admin
 from app.models import AuditEvent, GameServer, Node, NodeTask, User
-from app.schemas import LoginRequest, MessageResponse, NodeCreate, NodeHeartbeat, NodeRead, NodeTaskResult, ServerAction, ServerCreate, ServerRead, TokenResponse, UserCreate, UserRead, ConsoleCommand, ServerFileRequest, MinecraftAction
+from app.schemas import LoginRequest, MessageResponse, NodeCreate, NodeHeartbeat, NodeRead, NodeTaskResult, ServerAction, ServerCreate, ServerRead, TokenResponse, UserCreate, UserRead, ConsoleCommand, ServerFileRequest, MinecraftAction, BackupAction, VersionUpgrade
 from app.security import DUMMY_HASH, create_access_token, hash_password, verify_password
 
 router = APIRouter()
@@ -216,7 +216,7 @@ def finish_node_task(task_id: int, payload: NodeTaskResult, x_node_token: str | 
     task.status = 'failed' if payload.error else 'completed'
     task.result = json.dumps({'docker_id':payload.docker_id,'error':payload.error,'data':payload.data})
     task.completed_at = datetime.now(timezone.utc)
-    if task.server_id and task.action in ('provision','start','stop','restart','delete'):
+    if task.server_id and task.action in ('provision','start','stop','restart','delete','version_upgrade'):
         server = db.get(GameServer, task.server_id)
         if server:
             server.docker_id = payload.docker_id or server.docker_id
@@ -227,6 +227,9 @@ def finish_node_task(task_id: int, payload: NodeTaskResult, x_node_token: str | 
                 server.status = 'error'
             elif task.action == 'stop':
                 server.status = 'offline'
+            elif task.action == 'version_upgrade' and not payload.error:
+                server.version = json.loads(task.payload).get('version', server.version)
+                server.status = 'online'
             else:
                 server.status = 'online'
     db.commit()
@@ -327,6 +330,37 @@ def minecraft_action(server_id: int, payload: MinecraftAction, actor: User = Dep
     db.commit()
     db.refresh(task)
     return {'task_id':task.id,'status':task.status,'command':command}
+
+
+@router.post('/admin/servers/{server_id}/backups', status_code=status.HTTP_202_ACCEPTED)
+def manage_server_backups(server_id: int, payload: BackupAction, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    server, node = get_managed_server(server_id, db)
+    if payload.action == 'restore' and not payload.backup_id:
+        raise HTTPException(status_code=422, detail='Choose a backup to restore')
+    task_action = {'create':'backup_create','list':'backup_list','restore':'backup_restore'}[payload.action]
+    task = NodeTask(node_id=node.id, server_id=server.id, action=task_action,
+        payload=json.dumps({'server_id':server.id,'backup_id':payload.backup_id}))
+    db.add(task)
+    record_event(db, 'admin.server.backup.'+payload.action, actor, f'Queued {payload.action} backup for server {server.id}')
+    db.commit()
+    db.refresh(task)
+    return {'task_id':task.id,'status':task.status}
+
+@router.post('/admin/servers/{server_id}/version', status_code=status.HTTP_202_ACCEPTED)
+def upgrade_server_version(server_id: int, payload: VersionUpgrade, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    server, node = get_managed_server(server_id, db)
+    if server.game != 'minecraft':
+        raise HTTPException(status_code=400, detail='Version upgrades are only available for Minecraft servers')
+    if payload.version == server.version:
+        raise HTTPException(status_code=409, detail='Server is already configured for this version')
+    task = NodeTask(node_id=node.id, server_id=server.id, action='version_upgrade',
+        payload=json.dumps({'server_id':server.id,'version':payload.version,'previous_version':server.version,
+            'memory_mb':server.memory_mb,'cpu_limit':server.cpu_limit,'port':server.allocation_port}))
+    db.add(task)
+    record_event(db, 'admin.server.version.upgrade', actor, f'Queued Minecraft version {payload.version} for server {server.id}')
+    db.commit()
+    db.refresh(task)
+    return {'task_id':task.id,'status':task.status,'version':payload.version}
 
 @router.get('/admin/servers/{server_id}/tasks')
 def list_server_tasks(server_id: int, _: User = Depends(require_admin), db: Session = Depends(get_db)):
