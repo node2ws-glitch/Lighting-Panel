@@ -31,3 +31,7 @@ export const apiHealth = () => request('/health');
 export const listNodes = () => request('/admin/nodes');
 export const createNode = (payload) => request('/admin/nodes', { method: 'POST', body: JSON.stringify(payload) });
 export const setNodeStatus = (id, enabled) => request('/admin/nodes/' + id + '/status?is_enabled=' + enabled, { method: 'PATCH' });
+
+export const listServers = () => request('/admin/servers');
+export const createGameServer = (payload) => request('/admin/servers', { method: 'POST', body: JSON.stringify(payload) });
+export const controlServer = (id, action) => request('/admin/servers/' + id + '/action', { method: 'POST', body: JSON.stringify({action}) });
