@@ -48,3 +48,12 @@ The agent also supports `console`, `console_logs`, and `file_list`, `file_read`,
 
 Console output is polled through the task API and is not a persistent WebSocket stream. SFTP is not enabled yet. Update the agent files and restart `lighting-node-agent` on every node before using these features.
 
+
+
+## Phase 8 — backups and version upgrades
+
+The agent stores snapshots outside the Docker volume in `/var/lib/lighting-panel/backups/<server-id>`. Each archive is compressed, has a generated non-user-controlled identifier, and is stored in a mode-0700 directory. Snapshot creation briefly stops a running Minecraft container for a consistent filesystem copy, then restores its prior running state. Each snapshot is limited to 20 GiB of uncompressed data.
+
+Restore validates every archive member and rejects absolute paths, parent traversal, symbolic links, hard links, devices, and FIFOs. It creates a pre-restore safety snapshot before replacing the volume contents. Version upgrades validate the Minecraft release version, create a pre-upgrade snapshot, and recreate only the managed container while retaining the persistent volume, allocated port, and resource limits.
+
+Backups are local to the VPS node; they do not protect against node or disk loss. Copy the backup directory to separate storage for disaster recovery. Automated schedules and remote object storage are not part of this phase.
