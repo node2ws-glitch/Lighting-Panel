@@ -18,7 +18,7 @@ function DashboardApp({user,onLogout}){
   let alive=true;
   const load=async()=>{
    try{
-    const [rows,nodeRows,auditRows]=await Promise.all([listServers(),listNodes(),listAudit()]);
+    const [rows,nodeRows,auditRows]=await Promise.all([listServers(),user?.role==='admin'?listNodes():Promise.resolve([]),user?.role==='admin'?listAudit():Promise.resolve([])]);
     if(!alive)return;
     setNodes(nodeRows);
     setAuditEvents(auditRows);
@@ -57,7 +57,7 @@ function DashboardApp({user,onLogout}){
   </aside>
   {sidebar&&<div className="scrim" onClick={()=>setSidebar(false)}/>}
   <main className="main"><header className="topbar"><div className="crumb"><button className="mobile-menu" onClick={()=>setSidebar(true)}><Menu size={19}/></button><span>Workspace</span><b>/</b><strong>{page}</strong></div><div className="top-actions"><div className="status-pill"><span/>{nodes.length===0?'No nodes connected':nodes.every(n=>n.is_enabled&&n.last_heartbeat&&Date.now()-new Date(n.last_heartbeat).getTime()<60000)?'All nodes connected':'Node attention required'}</div><button className="icon-button" onClick={()=>announce('You are all caught up')}><Bell size={18}/><i/></button><button className="help-button" onClick={onLogout}><LogOut size={16}/> <span>Sign out</span></button><button className="help-button" onClick={()=>announce('Help center coming soon')}><CircleHelp size={17}/> <span>Help</span></button></div></header>
-  <div className="content"><div className="welcome-row"><div><div className="eyebrow"><span/> CONTROL CENTER <span className="eyebrow-line"/></div><h1>{page==='Dashboard'?'Welcome back, Admin.':page}</h1><p>{page==='Dashboard'?'Here’s what’s happening across your infrastructure today.':'Manage your Lighting Panel infrastructure and services.'}</p></div><div className="welcome-actions"><button className="button-secondary" onClick={()=>announce('Activity report export is not connected yet')}><ArrowDownToLine size={16}/> Export report</button><button className="button-primary" onClick={()=>setPage('Servers')}><Plus size={17}/> Create server</button></div></div>
+  <div className="content"><div className="welcome-row"><div><div className="eyebrow"><span/> CONTROL CENTER <span className="eyebrow-line"/></div><h1>{page==='Dashboard'?'Welcome back, Admin.':page}</h1><p>{page==='Dashboard'?'Here’s what’s happening across your infrastructure today.':'Manage your Lighting Panel infrastructure and services.'}</p></div><div className="welcome-actions"><button className="button-secondary" onClick={()=>announce('Activity report export is not connected yet')}><ArrowDownToLine size={16}/> Export report</button>{user?.role==='admin'&&<button className="button-primary" onClick={()=>setPage('Servers')}><Plus size={17}/> Create server</button>}</div></div>
   {page==='Dashboard'?<>
    <div className="stats-grid"><Stat icon={Server} label="Total servers" value={String(servers.length).padStart(2,'0')} detail="Across all nodes" trend="↗ Live"/><Stat icon={Activity} label="Running servers" value={String(servers.filter(s=>s.status==='Online').length).padStart(2,'0')} detail="Ready to serve players" trend="● Healthy"/><Stat icon={Cpu} label="CPU utilization" value={averageCpu.toFixed(1)+"%"} detail={nodes.length+" reporting nodes"} trend="↗ Live"/><Stat icon={Database} label="Memory allocated" value={allocatedMemory.toFixed(1)+" GB"} detail={servers.length+" server allocations"} trend="↗ Live"/></div>
    <div className="section-heading"><div><h2>Infrastructure</h2><p>Real-time overview of your server fleet</p></div><button className="text-button" onClick={()=>setPage('Servers')}>View all servers <ArrowUpRight size={15}/></button></div>
@@ -98,9 +98,9 @@ function RealServersPage({announce,user}){
  const online=n=>n?.last_heartbeat&&Date.now()-new Date(n.last_heartbeat).getTime()<60000;
  const statusLabel=s=>({installing:'Installing',starting:'Starting',stopping:'Stopping',deleting:'Deleting',online:'Running',offline:'Offline',error:'Error'}[s]||s);
  return <div className="panel servers-page">
-  <div className="panel-head"><div><h3>Minecraft servers</h3><p>Docker-backed instances provisioned on your connected VPS nodes</p></div><button className="button-primary" onClick={()=>setShow(v=>!v)}><Plus size={16}/> Deploy server</button></div>
+  <div className="panel-head"><div><h3>Minecraft servers</h3><p>Your servers and any instances shared with your account</p></div>{user?.role==='admin'&&<button className="button-primary" onClick={()=>setShow(v=>!v)}><Plus size={16}/> Deploy server</button>}</div>
   {error&&<div className="auth-error">{error}</div>}
-  {show&&<form className="user-create-form" onSubmit={submit}><h3>Deploy Minecraft Java server</h3><div className="user-form-grid">
+  {show&&user?.role==='admin'&&<form className="user-create-form" onSubmit={submit}><h3>Deploy Minecraft Java server</h3><div className="user-form-grid">
    <input placeholder="Server name" minLength="3" maxLength="48" value={form.name} onChange={e=>setForm({...form,name:e.target.value})} required/>
    <select value={form.node_id} onChange={e=>setForm({...form,node_id:e.target.value})} required><option value="">Choose online node</option>{nodes.filter(n=>n.is_enabled&&online(n)).map(n=><option key={n.id} value={n.id}>{n.name} · {n.fqdn}</option>)}</select>
    <select value={form.version} onChange={e=>setForm({...form,version:e.target.value})}><option value="LATEST">Latest Minecraft</option><option value="1.21.4">1.21.4</option><option value="1.21.1">1.21.1</option><option value="1.20.4">1.20.4</option></select>
