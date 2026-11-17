@@ -118,7 +118,7 @@ def test_console_and_file_tasks_are_node_scoped_and_do_not_change_server_status(
     server_id = created['id']
     command = client.post(f'/api/v1/admin/servers/{server_id}/console', headers=admin, json={'command':'list'})
     assert command.status_code == 202
-    assert client.post(f'/api/v1/admin/servers/{server_id}/console', headers=admin, json={'command':'say hello\\nstop'}).status_code == 422
+    assert client.post(f'/api/v1/admin/servers/{server_id}/console', headers=admin, json={'command':'say hello'+chr(10)+'stop'}).status_code == 422
     files = client.post(f'/api/v1/admin/servers/{server_id}/files', headers=admin, json={'operation':'list','path':'.'})
     assert files.status_code == 202
     queued = client.get('/api/v1/nodes/tasks', headers=node_headers).json()
