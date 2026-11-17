@@ -56,3 +56,14 @@ Keep `.env` private; use a unique high-entropy SECRET_KEY, HTTPS, exact CORS ori
 Server provisioning uses a fixed Paper Minecraft image, persistent Docker volume, allocated host TCP port, and configured memory/CPU limits. The node agent only executes the supported task allowlist and checks container ownership labels before lifecycle operations. See ../node-agent/README.md for installation and operational requirements.
 
 The first runtime release is not a full multi-tenant security boundary. Add console/file access permissions, disk quotas, network policy, task idempotency/monitoring, and security review before accepting untrusted customers.
+
+## Console and file manager
+
+- `POST /api/v1/admin/servers/{id}/console` — queue a validated Minecraft console command.
+- `POST /api/v1/admin/servers/{id}/console/logs` — request recent container logs.
+- `POST /api/v1/admin/servers/{id}/files` — queue list/read/write/mkdir/delete/rename operations.
+- `GET /api/v1/admin/servers/{id}/tasks` — poll task status and recent console output.
+- `GET /api/v1/admin/servers/{id}/tasks/{task_id}` — fetch one task result, including bounded file-read content.
+
+All endpoints require an administrator. The node agent confines file operations to the container's `/data` volume, rejects resolved paths outside that root, skips symlink entries, limits editor transfers to 512 KiB, and only deletes individual files. Console commands are sent to the Minecraft process stdin, not executed by a shell. The UI polls for console logs; WebSocket streaming and SFTP are not part of this release.
+
