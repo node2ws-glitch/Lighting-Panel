@@ -161,8 +161,14 @@ def create_server_backup(client, server_id, mountpoint, label='manual'):
     temporary = directory / f'.{backup_id}.tmp'
     try:
         with tarfile.open(temporary, 'w:gz', compresslevel=3) as archive:
-            for item in sorted(mountpoint.iterdir(), key=lambda p:p.name):
-                archive.add(item, arcname=item.name, recursive=True)
+            for root, directories, filenames in os.walk(mountpoint, followlinks=False):
+                root_path = Path(root)
+                directories[:] = sorted(name for name in directories if not (root_path / name).is_symlink())
+                archive.add(root_path, arcname=root_path.relative_to(mountpoint).as_posix() or '.', recursive=False)
+                for filename in sorted(filenames):
+                    item = root_path / filename
+                    if not item.is_symlink() and item.is_file():
+                        archive.add(item, arcname=item.relative_to(mountpoint).as_posix(), recursive=False)
         temporary.replace(target)
     except Exception:
         temporary.unlink(missing_ok=True)
