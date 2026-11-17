@@ -259,6 +259,11 @@ def require_server_permission(server_id: int, actor: User, permission: str, db: 
         raise HTTPException(status_code=403, detail='You do not have permission to perform this action')
     return server
 
+def task_allowed(task: NodeTask, permissions: set[str]) -> bool:
+    if task.action in ('console','console_logs'):
+        return 'control.console' in permissions or 'server.manage' in permissions
+    return task_permission(task) in permissions
+
 def task_permission(task: NodeTask) -> str:
     if task.action in ('console','console_logs'):
         return 'control.console'
@@ -411,7 +416,7 @@ def list_server_tasks(server_id: int, actor: User = Depends(get_current_user), d
     output = []
     for task in reversed(tasks):
         result = json.loads(task.result) if task.result else None
-        if task_permission(task) not in permissions:
+        if not task_allowed(task, permissions):
             result = None
         elif result and task.action == 'file_read':
             result = {'error':result.get('error'),'data':None}
@@ -424,7 +429,7 @@ def get_server_task(server_id: int, task_id: int, actor: User = Depends(get_curr
     task = db.get(NodeTask, task_id)
     if task is None or task.server_id != server_id:
         raise HTTPException(status_code=404, detail='Server task not found')
-    if task_permission(task) not in server_permissions(db.get(GameServer, server_id), actor, db):
+    if not task_allowed(task, server_permissions(db.get(GameServer, server_id), actor, db)):
         raise HTTPException(status_code=403, detail='You do not have permission to view this task result')
     return {'id':task.id,'action':task.action,'status':task.status,'result':json.loads(task.result) if task.result else None,'created_at':task.created_at,'completed_at':task.completed_at}
 
