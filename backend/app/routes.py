@@ -309,7 +309,7 @@ def minecraft_action(server_id: int, payload: MinecraftAction, actor: User = Dep
     elif action == 'gamemode':
         if payload.value not in ('survival', 'creative', 'adventure', 'spectator'):
             raise HTTPException(status_code=422, detail='Choose a supported game mode')
-        command = 'gamemode ' + payload.value
+        command = 'defaultgamemode ' + payload.value
     elif action == 'time':
         if payload.value not in ('day', 'noon', 'night', 'midnight'):
             raise HTTPException(status_code=422, detail='Choose day, noon, night, or midnight')
