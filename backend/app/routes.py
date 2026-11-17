@@ -158,7 +158,12 @@ def create_server(payload: ServerCreate, actor: User = Depends(require_admin), d
     port = next((p for p in range(25565, 26000) if p not in set(used)), None)
     if port is None:
         raise HTTPException(status_code=409, detail='No free Minecraft allocations remain')
-    server = GameServer(node_id=node.id, owner_id=actor.id, name=payload.name.strip(), version=payload.version,
+    owner = actor
+    if payload.owner_email:
+        owner = db.scalar(select(User).where(User.email == str(payload.owner_email).lower(), User.is_active.is_(True)))
+        if owner is None or owner.role == 'admin':
+            raise HTTPException(status_code=400, detail='Choose an active customer account, not an administrator')
+    server = GameServer(node_id=node.id, owner_id=owner.id, name=payload.name.strip(), version=payload.version,
         memory_mb=payload.memory_mb, cpu_limit=payload.cpu_limit, allocation_port=port, status='installing')
     db.add(server)
     db.flush()
