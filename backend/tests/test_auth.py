@@ -100,3 +100,32 @@ def test_server_creation_rejects_offline_node():
         'name':'Should Not Deploy','node_id':enrolled['node']['id'],'memory_mb':1024,'cpu_limit':1
     })
     assert response.status_code == 409
+
+
+def test_console_and_file_tasks_are_node_scoped_and_do_not_change_server_status():
+    login = client.post('/api/v1/auth/login', json={'email':'admin@example.com','password':'Correct-Horse-123!'}).json()
+    admin = {'Authorization':f"Bearer {login['access_token']}"}
+    enrolled = client.post('/api/v1/admin/nodes', headers=admin, json={'name':'phase-six-node','fqdn':'phase-six.example.test'}).json()
+    node_headers = {'X-Node-Token':enrolled['token']}
+    client.post('/api/v1/nodes/heartbeat', headers=node_headers, json={
+        'cpu_percent':4,'memory_total':8*1024**3,'memory_used':1024**3,'disk_total':50*1024**3,'disk_used':5*1024**3
+    })
+    created = client.post('/api/v1/admin/servers', headers=admin, json={
+        'name':'Console SMP','node_id':enrolled['node']['id'],'memory_mb':1024,'cpu_limit':1
+    }).json()
+    provision = client.get('/api/v1/nodes/tasks', headers=node_headers).json()[0]
+    client.post(f"/api/v1/nodes/tasks/{provision['id']}/result", headers=node_headers, json={'docker_id':'docker-test'})
+    server_id = created['id']
+    command = client.post(f'/api/v1/admin/servers/{server_id}/console', headers=admin, json={'command':'list'})
+    assert command.status_code == 202
+    assert client.post(f'/api/v1/admin/servers/{server_id}/console', headers=admin, json={'command':'say hello\\nstop'}).status_code == 422
+    files = client.post(f'/api/v1/admin/servers/{server_id}/files', headers=admin, json={'operation':'list','path':'.'})
+    assert files.status_code == 202
+    queued = client.get('/api/v1/nodes/tasks', headers=node_headers).json()
+    assert {task['action'] for task in queued} == {'console','file_list'}
+    for task in queued:
+        client.post(f"/api/v1/nodes/tasks/{task['id']}/result", headers=node_headers, json={'data':{'output':'ok','entries':[]}})
+    assert client.get('/api/v1/admin/servers', headers=admin).json()[0]['status'] == 'online'
+    history = client.get(f'/api/v1/admin/servers/{server_id}/tasks', headers=admin)
+    assert history.status_code == 200
+    assert history.json()[-1]['status'] == 'completed'
