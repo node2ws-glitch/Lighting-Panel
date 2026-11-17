@@ -76,3 +76,7 @@ class ServerRead(BaseModel):
 
 class ServerAction(BaseModel):
     action: str = Field(pattern=r'^(start|stop|restart|delete)$')
+
+class NodeTaskResult(BaseModel):
+    docker_id: str | None = Field(default=None, max_length=128)
+    error: str | None = Field(default=None, max_length=1000)
