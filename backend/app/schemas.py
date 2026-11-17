@@ -65,6 +65,7 @@ class ServerRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     node_id: int
+    owner_id: int | None
     name: str
     game: str
     version: str
