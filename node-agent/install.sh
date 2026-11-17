@@ -22,8 +22,8 @@ chmod 0600 /etc/lighting-agent/agent.env
 cat > /etc/systemd/system/lighting-node-agent.service <<'EOF'
 [Unit]
 Description=Lighting Panel VPS Node Telemetry Agent
-After=network-online.target
-Wants=network-online.target
+After=network-online.target docker.service
+Wants=network-online.target docker.service
 [Service]
 Type=simple
 User=root
