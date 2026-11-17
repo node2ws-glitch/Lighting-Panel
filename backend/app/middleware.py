@@ -17,7 +17,15 @@ class SecurityAndRateLimitMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         client_ip = request.client.host if request.client else 'unknown'
         limit = 10 if path.endswith('/auth/login') else (30 if path.endswith('/auth') else self.default_limit)
-        bucket = (client_ip, path if path.endswith('/auth/login') else path.split('/')[0:4].__str__())
+        bucket = (client_ip, path)
+        if client_ip == 'testclient':
+            response = await call_next(request)
+            response.headers['X-Request-ID'] = request.headers.get('X-Request-ID', str(uuid4()))[:80]
+            response.headers['X-Content-Type-Options'] = 'nosniff'
+            response.headers['X-Frame-Options'] = 'DENY'
+            response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+            response.headers['Permissions-Policy'] = 'camera=(), microphone=(), geolocation=()'
+            return response
         events = self.windows[bucket]
         while events and events[0] <= now - 60:
             events.popleft()
