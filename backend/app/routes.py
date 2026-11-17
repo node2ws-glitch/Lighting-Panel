@@ -9,7 +9,7 @@ from app.audit import record_event
 from app.database import get_db
 from app.dependencies import get_current_user, require_admin
 from app.models import AuditEvent, GameServer, Node, NodeTask, User
-from app.schemas import LoginRequest, MessageResponse, NodeCreate, NodeHeartbeat, NodeRead, NodeTaskResult, ServerAction, ServerCreate, ServerRead, TokenResponse, UserCreate, UserRead
+from app.schemas import LoginRequest, MessageResponse, NodeCreate, NodeHeartbeat, NodeRead, NodeTaskResult, ServerAction, ServerCreate, ServerRead, TokenResponse, UserCreate, UserRead, ConsoleCommand, ServerFileRequest
 from app.security import DUMMY_HASH, create_access_token, hash_password, verify_password
 
 router = APIRouter()
@@ -214,16 +214,17 @@ def finish_node_task(task_id: int, payload: NodeTaskResult, x_node_token: str | 
     if task is None or task.node_id != node.id or task.status != 'claimed':
         raise HTTPException(status_code=404, detail='Claimed task not found')
     task.status = 'failed' if payload.error else 'completed'
-    task.result = json.dumps({'docker_id':payload.docker_id,'error':payload.error})
+    task.result = json.dumps({'docker_id':payload.docker_id,'error':payload.error,'data':payload.data})
     task.completed_at = datetime.now(timezone.utc)
     if task.server_id:
         server = db.get(GameServer, task.server_id)
         if server:
-            server.docker_id = payload.docker_id or server.docker_id
-            server.last_error = payload.error
+            if task.action in ('provision','start','stop','restart','delete'):
+                server.docker_id = payload.docker_id or server.docker_id
+                server.last_error = payload.error
             if task.action == 'delete' and not payload.error:
                 db.delete(server)
-            elif payload.error:
+            elif payload.error and task.action in ('provision','start','stop','restart','delete'):
                 server.status = 'error'
             elif task.action == 'stop':
                 server.status = 'offline'
@@ -233,3 +234,66 @@ def finish_node_task(task_id: int, payload: NodeTaskResult, x_node_token: str | 
                 server.status = 'online'
     db.commit()
     return {'accepted':True}
+
+
+def get_managed_server(server_id: int, db: Session) -> tuple[GameServer, Node]:
+    server = db.get(GameServer, server_id)
+    if server is None:
+        raise HTTPException(status_code=404, detail='Server not found')
+    node = db.get(Node, server.node_id)
+    if node is None or not node.is_enabled or not node_is_recent(node):
+        raise HTTPException(status_code=409, detail='Server node is offline')
+    if server.status != 'online':
+        raise HTTPException(status_code=409, detail='Server must be online before using console or files')
+    return server, node
+
+@router.post('/admin/servers/{server_id}/console', status_code=status.HTTP_202_ACCEPTED)
+def send_console_command(server_id: int, payload: ConsoleCommand, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    server, node = get_managed_server(server_id, db)
+    command = payload.command.strip()
+    if not command or command.startswith('/') or len(command) > 512 or any(ord(ch) < 32 for ch in command):
+        raise HTTPException(status_code=422, detail='Enter a valid Minecraft command without the leading slash')
+    task = NodeTask(node_id=node.id, server_id=server.id, action='console', payload=json.dumps({'server_id':server.id,'command':command}))
+    db.add(task)
+    record_event(db, 'admin.server.console', actor, f'Sent console command to server {server.id}')
+    db.commit()
+    db.refresh(task)
+    return {'task_id':task.id,'status':task.status}
+
+@router.post('/admin/servers/{server_id}/console/logs', status_code=status.HTTP_202_ACCEPTED)
+def request_console_logs(server_id: int, _: User = Depends(require_admin), db: Session = Depends(get_db)):
+    server, node = get_managed_server(server_id, db)
+    latest = db.scalar(select(NodeTask).where(NodeTask.server_id == server.id, NodeTask.action == 'console_logs').order_by(NodeTask.id.desc()).limit(1))
+    if latest and latest.status in ('pending','claimed'):
+        return {'task_id':latest.id,'status':latest.status}
+    if latest and latest.completed_at:
+        stamp = latest.completed_at.replace(tzinfo=timezone.utc) if latest.completed_at.tzinfo is None else latest.completed_at
+        if (datetime.now(timezone.utc)-stamp).total_seconds() < 2:
+            return {'task_id':latest.id,'status':latest.status}
+    task = NodeTask(node_id=node.id, server_id=server.id, action='console_logs', payload=json.dumps({'server_id':server.id}))
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    return {'task_id':task.id,'status':task.status}
+
+@router.post('/admin/servers/{server_id}/files', status_code=status.HTTP_202_ACCEPTED)
+def operate_server_files(server_id: int, payload: ServerFileRequest, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    server, node = get_managed_server(server_id, db)
+    if payload.operation == 'write' and payload.content_base64 is None:
+        raise HTTPException(status_code=422, detail='File content is required')
+    if payload.operation == 'rename' and not payload.destination:
+        raise HTTPException(status_code=422, detail='Destination path is required')
+    task_payload = {'server_id':server.id,'operation':payload.operation,'path':payload.path,'destination':payload.destination,'content_base64':payload.content_base64}
+    task = NodeTask(node_id=node.id, server_id=server.id, action='file_'+payload.operation, payload=json.dumps(task_payload))
+    db.add(task)
+    record_event(db, 'admin.server.files.'+payload.operation, actor, f'Queued file {payload.operation} for server {server.id}')
+    db.commit()
+    db.refresh(task)
+    return {'task_id':task.id,'status':task.status}
+
+@router.get('/admin/servers/{server_id}/tasks')
+def list_server_tasks(server_id: int, _: User = Depends(require_admin), db: Session = Depends(get_db)):
+    if db.get(GameServer, server_id) is None:
+        raise HTTPException(status_code=404, detail='Server not found')
+    tasks = db.scalars(select(NodeTask).where(NodeTask.server_id == server_id).order_by(NodeTask.id.desc()).limit(40)).all()
+    return [{'id':t.id,'action':t.action,'status':t.status,'result':json.loads(t.result) if t.result else None,'created_at':t.created_at,'completed_at':t.completed_at} for t in reversed(tasks)]
