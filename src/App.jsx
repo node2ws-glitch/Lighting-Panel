@@ -131,6 +131,11 @@ function ServerWorkspace({server,onClose,announce}){
   for(let i=0;i<30;i++){await new Promise(resolve=>setTimeout(resolve,700));const rows=await listServerTasks(server.id);setTasks(rows);const task=rows.find(t=>t.id===taskId);if(task&&(task.status==='completed'||task.status==='failed')){const detail=await getServerTask(server.id,taskId);if(task.status==='failed'||detail.result?.error)throw new Error(detail.result?.error||'Node operation failed');return detail.result?.data||{};}}
   throw new Error('Node did not respond in time. Check the node agent service.');
  }
+ async function runMinecraft(payload){
+  setBusy(true);setError('');
+  try{const queued=await minecraftAction(server.id,payload);await waitTask(queued.task_id);await requestConsoleLogs(server.id);await refreshTasks();announce('Minecraft command delivered to node');}
+  catch(e){setError(e.message);}finally{setBusy(false);}
+ }
  async function sendCommand(e){
   e.preventDefault();if(!command.trim())return;setBusy(true);setError('');
   try{await sendConsoleCommand(server.id,command.trim());setCommand('');await refreshTasks();announce('Console command queued');}
