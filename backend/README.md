@@ -39,3 +39,13 @@ API docs: http://127.0.0.1:8000/docs
 ## Production notes
 
 Keep `.env` private; use a unique high-entropy SECRET_KEY, HTTPS, exact CORS origins, rate limiting at the reverse proxy, and private database networking. Run Alembic migrations as a deployment step. Access tokens expire after 20 minutes by default. Logout currently records an audit event and relies on the client discarding the short-lived token; implement token revocation/refresh tokens before long-lived sessions. Public self-registration is disabled. Never commit production secrets.
+
+
+## VPS nodes
+
+- `POST /api/v1/admin/nodes` — administrator creates a node and receives a one-time enrollment token.
+- `GET /api/v1/admin/nodes` — administrator views live telemetry and last heartbeat.
+- `PATCH /api/v1/admin/nodes/{id}/status?is_enabled=false` — disables a node credential.
+- `POST /api/v1/nodes/heartbeat` — node-agent endpoint authenticated with the X-Node-Token header.
+
+The initial node agent reports host CPU, RAM and disk every 15 seconds. It does not have Docker socket access and cannot provision or control containers yet. Install instructions are in ../node-agent/README.md.
