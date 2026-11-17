@@ -1,21 +1,43 @@
-# Lighting Node Agent — Phase 4
+# Lighting Node Agent
 
-The first node-agent release reports host CPU, memory and disk telemetry to the panel. It does not yet create containers or run user workloads; container lifecycle will use an isolated runtime adapter in a later phase.
+The VPS node agent reports host telemetry and executes a constrained set of Lighting Panel server lifecycle tasks through Docker Engine. It does not accept arbitrary shell commands or arbitrary image names from the panel.
 
 ## Enroll and install
 
-1. Sign in as an administrator.
-2. Create a node using POST /api/v1/admin/nodes with JSON: {"name":"vps-01","fqdn":"node01.example.com"}.
-3. Save the returned one-time token. It is shown only at creation.
-4. Copy agent.py, requirements.txt and install.sh to the VPS.
-5. Run sudo bash install.sh and provide the panel HTTPS URL and token.
+1. Sign in to Lighting Panel as an administrator.
+2. Create a node in the Nodes page and copy the one-time token.
+3. Copy `agent.py`, `requirements.txt`, and `install.sh` to the target Ubuntu/Debian VPS.
+4. Run `sudo bash install.sh` and enter the public panel HTTPS URL and node token.
+5. The installer installs Docker Engine, installs the Python agent in an isolated virtual environment, stores the token in a root-only configuration file, and enables a systemd service.
 
-Check the service with systemctl status lighting-node-agent and journalctl -u lighting-node-agent -f.
+Check the service:
 
-## Security
+```bash
+systemctl status lighting-node-agent
+journalctl -u lighting-node-agent -f
+docker ps --filter label=net.lightingpanel.managed=true
+```
 
-- Use HTTPS with a valid certificate for remote panels. Certificate verification is enabled.
-- The node credential is stored hashed in the panel database and plaintext only in root-readable mode-0600 configuration on the VPS.
-- Never paste node tokens into chat, logs, Git, or browser frontend code.
-- Disable a compromised node in the panel. Token rotation is planned.
-- The current service runs as root to read host-wide metrics. It has no Docker socket access and does not execute user commands.
+## Server runtime
+
+The current runtime adapter supports Minecraft Java using the `itzg/minecraft-server:java21` image with Paper. Each server gets:
+- A dedicated Docker container and persistent named volume.
+- A dedicated TCP allocation from the panel allocation range.
+- Memory and CPU limits configured at container creation.
+- Container labels used to verify ownership before lifecycle actions.
+- `start`, `stop`, `restart`, and `delete` task operations.
+
+The node agent only executes the fixed `provision`, `start`, `stop`, `restart`, and `delete` task types. The panel never supplies a raw Docker command, image name, host path, or shell command. Deleting a server also deletes its persistent world volume and is irreversible.
+
+## Network
+
+Open the assigned TCP allocation range (currently 25565–25999) in the VPS firewall/security group to permit Minecraft clients to connect. Keep the Docker daemon socket private; never expose it over TCP. Use a trusted HTTPS certificate for the panel API.
+
+## Security and operations
+
+- Node credentials are stored as SHA-256 hashes in the panel database and plaintext only in root-readable mode-0600 config on the VPS.
+- Disable a compromised node from the panel. Credential rotation is not implemented yet.
+- Docker access is highly privileged. Run this agent only on dedicated hosting nodes you administer.
+- The current agent runs as root to read host-wide metrics and access the Docker socket.
+- Docker container resource limits are enforced by the daemon. Host firewall, disk quotas, image update policy, console streaming, and container health reconciliation are still required before multi-tenant production use.
+- Task claims have a two-minute lease so interrupted work can be retried after the lease expires.
