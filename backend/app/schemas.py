@@ -91,3 +91,9 @@ class ServerFileRequest(BaseModel):
     path: str = Field(default='.', min_length=1, max_length=512)
     destination: str | None = Field(default=None, max_length=512)
     content_base64: str | None = Field(default=None, max_length=1400000)
+
+
+class MinecraftAction(BaseModel):
+    action: Literal['list','whitelist_add','whitelist_remove','op','deop','difficulty','gamemode','time','weather','save_all']
+    player: str | None = Field(default=None, min_length=3, max_length=16, pattern=r'^[A-Za-z0-9_]{3,16}$')
+    value: str | None = Field(default=None, max_length=24)
