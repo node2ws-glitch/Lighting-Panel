@@ -110,7 +110,8 @@ function RealServersPage({announce}){
   {loading?<p className="muted">Loading server inventory from API…</p>:<div className="table-wrap"><table><thead><tr><th>SERVER</th><th>NODE</th><th>STATUS</th><th>RESOURCES</th><th>ALLOCATION</th><th>CONTROLS</th></tr></thead><tbody>{filtered.map(server=>{const node=nodeById(server.node_id);const busy=['installing','starting','stopping','deleting'].includes(server.status);return <tr key={server.id}><td><div className="table-server"><span className="server-icon violet"><Gamepad2 size={17}/></span><span><b>{server.name}</b><small>Minecraft Java · {server.version}</small></span></div></td><td>{node?.name||'Unknown node'}<small className="user-email">{node?.fqdn||'—'}</small></td><td><span className={'server-status '+(server.status==='online'?'online':['installing','starting','stopping','deleting'].includes(server.status)?'installing':'offline')}><i/>{statusLabel(server.status)}</span>{server.last_error&&<small className="server-error">{server.last_error}</small>}</td><td>{server.memory_mb} MB RAM · {server.cpu_limit} vCPU</td><td><code>{node?.fqdn||'node'}:{server.allocation_port}</code></td><td><div className="server-controls"><button className="small-action" disabled={busy||server.status==='error'} onClick={()=>action(server,server.status==='online'?'stop':'start')}>{server.status==='online'?'Stop':'Start'}</button><button className="small-action ghost" disabled={busy||server.status==='error'} onClick={()=>action(server,'restart')}>Restart</button><button className="small-action danger" disabled={busy} onClick={()=>action(server,'delete')}>Delete</button></div></td></tr>})}</tbody></table>{filtered.length===0&&<div className="empty">{servers.length?'No servers match your search.':'No servers deployed yet. Enroll an online VPS node, then deploy your first Minecraft server.'}</div>}</div>}
  </div>;
 }
-\nfunction UsersPage({announce}){
+
+function UsersPage({announce}){
  const [users,setUsers]=useState([]),[loading,setLoading]=useState(true),[error,setError]=useState(''),[show,setShow]=useState(false);
  const [form,setForm]=useState({email:'',username:'',password:'',role:'user'});
  const refresh=()=>{setLoading(true);listUsers().then(setUsers).catch(e=>setError(e.message)).finally(()=>setLoading(false));};
@@ -138,7 +139,8 @@ function NodesPage({announce}){
  {loading?<p className="muted">Loading node inventory…</p>:<div className="table-wrap"><table><thead><tr><th>NODE</th><th>CONNECTION</th><th>CPU</th><th>MEMORY</th><th>DISK</th><th>LAST HEARTBEAT</th><th>ACTION</th></tr></thead><tbody>{nodes.map(n=><tr key={n.id}><td><b>{n.name}</b><small className="user-email">{n.fqdn}</small></td><td><span className={'server-status '+(online(n)?'online':'offline')}><i/>{!n.is_enabled?'Disabled':online(n)?'Connected':'Offline'}</span></td><td>{n.cpu_percent.toFixed(1)}%</td><td>{(n.memory_used/1073741824).toFixed(1)} / {(n.memory_total/1073741824).toFixed(1)} GB</td><td>{(n.disk_used/1073741824).toFixed(1)} / {(n.disk_total/1073741824).toFixed(1)} GB</td><td>{n.last_heartbeat?new Date(n.last_heartbeat).toLocaleString():'Never'}</td><td><button className="small-action" onClick={()=>toggle(n)}>{n.is_enabled?'Disable':'Enable'}</button></td></tr>)}</tbody></table>{nodes.length===0&&<div className="empty">No nodes enrolled yet. Add your first VPS to start receiving telemetry.</div>}</div>}
  </div>;
 }
-\nfunction App(){
+
+function App(){
  const [user,setUser]=useState(null);
  const [checking,setChecking]=useState(Boolean(sessionStorage.getItem('lighting_panel_access_token')));
  useEffect(()=>{if(checking)currentUser().then(setUser).catch(()=>{clearToken();setUser(null);}).finally(()=>setChecking(false));},[]);
