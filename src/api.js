@@ -47,3 +47,8 @@ export const minecraftAction = (id, payload) => request('/admin/servers/' + id +
 
 export const manageServerBackups = (id, payload) => request('/admin/servers/' + id + '/backups', { method: 'POST', body: JSON.stringify(payload) });
 export const upgradeServerVersion = (id, version) => request('/admin/servers/' + id + '/version', { method: 'POST', body: JSON.stringify({version}) });
+
+export const getServerAccess = (id) => request('/admin/servers/' + id + '/access');
+export const listServerMembers = (id) => request('/admin/servers/' + id + '/members');
+export const addServerMember = (id, payload) => request('/admin/servers/' + id + '/members', { method: 'POST', body: JSON.stringify(payload) });
+export const removeServerMember = (id, memberId) => request('/admin/servers/' + id + '/members/' + memberId, { method: 'DELETE' });
