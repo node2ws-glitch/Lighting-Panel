@@ -430,7 +430,12 @@ def add_server_member(server_id: int, payload: ServerMemberCreate, actor: User =
         raise HTTPException(status_code=400, detail='Administrator accounts already have full panel access')
     if db.scalar(select(ServerSubuser).where(ServerSubuser.server_id == server_id, ServerSubuser.user_id == member.id)):
         raise HTTPException(status_code=409, detail='This account already has access to the server')
-    permissions = sorted(set(payload.permissions) | {'server.read'})
+    permissions = set(payload.permissions) | {'server.read'}
+    if 'file.write' in permissions:
+        permissions.add('file.read')
+    if 'backup.create' in permissions or 'backup.restore' in permissions:
+        permissions.add('backup.read')
+    permissions = sorted(permissions)
     membership = ServerSubuser(server_id=server_id, user_id=member.id, permissions=json.dumps(permissions), created_by=actor.id)
     db.add(membership)
     record_event(db, 'server.member.add', actor, 'Granted server ' + str(server_id) + ' access to user ' + str(member.id) + ': ' + ','.join(permissions))
