@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import Login from './Login.jsx';
 import { currentUser, clearToken, logout, listUsers, createUser, setUserStatus, listAudit, listNodes, createNode, setNodeStatus, listServers, createGameServer, controlServer, sendConsoleCommand, requestConsoleLogs, operateServerFiles, listServerTasks, getServerTask } from './api.js';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Activity, ArrowDownToLine, ArrowUpRight, Bell, Box, ChartNoAxesCombined, ChevronDown, CircleHelp, Command, Cpu, Database, FileText, Gamepad2, Gauge, HardDrive, LayoutDashboard, LifeBuoy, LogOut, Menu, MoreHorizontal, Network, Plus, Search, Server, Settings, ShieldCheck, Terminal, Users, Wallet, Wifi, X, Zap, Folder, FolderPlus, FilePlus, ChevronRight, RefreshCw, Save, Trash2, ArrowLeft, Send, LoaderCircle, FileCode } from 'lucide-react';
+import { Activity, ArrowDownToLine, ArrowUpRight, Bell, Box, ChartNoAxesCombined, ChevronDown, CircleHelp, Command, Cpu, Database, FileText, Gamepad2, Gauge, HardDrive, LayoutDashboard, LifeBuoy, LogOut, Menu, MoreHorizontal, Network, Plus, Search, Server, Settings, ShieldCheck, Terminal, Users, Wallet, Wifi, X, Zap, Folder, FolderPlus, FilePlus, ChevronRight, RefreshCw, Save, Trash2, ArrowLeft, Send, LoaderCircle, FileCode, Download } from 'lucide-react';
 
 const initialServers = [];
 const nav = [
@@ -143,9 +143,19 @@ function ServerWorkspace({server,onClose,announce}){
    const data=await waitTask(queued.task_id);
    if(operation==='list'){setEntries(data.entries||[]);setPath(data.path||path);setFilePath('');}
    if(operation==='read'){const raw=atob(data.content_base64||'');const bytes=Uint8Array.from(raw,c=>c.charCodeAt(0));setFilePath(data.path);setFileText(new TextDecoder().decode(bytes));}
-   if(operation==='write')announce('File saved on VPS');
+   if(operation==='write'){announce('File saved on VPS');const q=await operateServerFiles(server.id,{operation:'list',path});const listing=await waitTask(q.task_id);setEntries(listing.entries||[]);}
    if(['delete','rename','mkdir'].includes(operation)){const target=extra.parent||path;const q=await operateServerFiles(server.id,{operation:'list',path:target});const listing=await waitTask(q.task_id);setEntries(listing.entries||[]);setPath(listing.path||target);setFilePath('');}
   }catch(e){setError(e.message);}finally{setBusy(false);}
+ }
+ async function uploadFile(event){
+  const file=event.target.files?.[0];event.target.value='';if(!file)return;
+  if(file.size>512*1024){setError('Upload limit is 512 KB. Use SFTP for larger files.');return;}
+  try{const bytes=new Uint8Array(await file.arrayBuffer());let binary='';for(let i=0;i<bytes.length;i+=0x8000)binary+=String.fromCharCode(...bytes.subarray(i,i+0x8000));await fileOperation('write',{path:path==='.'?file.name:path+'/'+file.name,content_base64:btoa(binary)});}catch(e){setError(e.message);}
+ }
+ async function downloadFile(){
+  if(!filePath)return;
+  setBusy(true);setError('');
+  try{const q=await operateServerFiles(server.id,{operation:'read',path:filePath});const data=await waitTask(q.task_id);const raw=atob(data.content_base64||'');const bytes=Uint8Array.from(raw,c=>c.charCodeAt(0));const url=URL.createObjectURL(new Blob([bytes]));const link=document.createElement('a');link.href=url;link.download=filePath.split('/').pop();link.click();URL.revokeObjectURL(url);}catch(e){setError(e.message);}finally{setBusy(false);}
  }
  function encodeBase64(value){
   const bytes=new TextEncoder().encode(value);let binary='';
@@ -163,9 +173,9 @@ function ServerWorkspace({server,onClose,announce}){
    <form className="console-command" onSubmit={sendCommand}><span className="console-prompt">/</span><input value={command} onChange={e=>setCommand(e.target.value)} placeholder="Enter a Minecraft command (e.g. list, say Hello)" maxLength={512}/><button className="button-primary" disabled={busy||!command.trim()}><Send size={14}/> Send</button></form>
    <div className="task-history"><b>Recent console actions</b>{tasks.filter(t=>t.action==='console').slice(-5).reverse().map(t=><div key={t.id}><code>{t.id}</code><span>{t.status==='completed'?'Command delivered':t.status==='failed'?'Failed':'Queued'}</span><small>{new Date(t.created_at).toLocaleTimeString()}</small></div>)}</div>
   </div>:<div className="file-manager">
-   <div className="file-toolbar"><div className="file-breadcrumb"><button onClick={()=>fileOperation('list',{path:'.'})}>/data</button>{path!=='.'&&<><ChevronRight size={13}/><span>{path}</span></>}</div><div><button className="small-action ghost" onClick={()=>fileOperation('list')}><RefreshCw size={13}/> Refresh</button><button className="small-action" onClick={()=>{const name=window.prompt('New file name');if(name)fileOperation('write',{path:path==='.'?name:path+'/'+name,content_base64:''});}}><FilePlus size={13}/> New file</button><button className="small-action" onClick={()=>{const name=window.prompt('New folder name');if(name)fileOperation('mkdir',{path:path==='.'?name:path+'/'+name});}}><FolderPlus size={13}/> Folder</button></div></div>
+   <div className="file-toolbar"><div className="file-breadcrumb"><button onClick={()=>fileOperation('list',{path:'.'})}>/data</button>{path!=='.'&&<><ChevronRight size={13}/><span>{path}</span></>}</div><div><button className="small-action ghost" onClick={()=>fileOperation('list')}><RefreshCw size={13}/> Refresh</button><label className="small-action file-upload-button"><input type="file" onChange={uploadFile} hidden/>Upload</label><button className="small-action" onClick={()=>{const name=window.prompt('New file name');if(name)fileOperation('write',{path:path==='.'?name:path+'/'+name,content_base64:''});}}><FilePlus size={13}/> New file</button><button className="small-action" onClick={()=>{const name=window.prompt('New folder name');if(name)fileOperation('mkdir',{path:path==='.'?name:path+'/'+name});}}><FolderPlus size={13}/> Folder</button></div></div>
    <div className="file-columns"><div className="file-list">{path!=='.'&&<button className="file-row" onClick={()=>fileOperation('list',{path:parent})}><ArrowLeft size={14}/> ..</button>}{entries.map(entry=><button className="file-row" key={entry.path} onClick={()=>entry.directory?fileOperation('list',{path:entry.path}):fileOperation('read',{path:entry.path})}>{entry.directory?<Folder size={15}/>:<FileCode size={15}/>}<span>{entry.name}</span><small>{entry.directory?'Folder':(entry.size/1024).toFixed(1)+' KB'}</small></button>)}</div>
-    <div className="file-editor">{filePath?<><div className="editor-head"><b>{filePath}</b><div><button className="small-action" disabled={busy} onClick={()=>fileOperation('write',{path:filePath,content_base64:encodeBase64(fileText)})}><Save size={13}/> Save</button><button className="small-action danger" disabled={busy} onClick={()=>{if(window.confirm('Delete '+filePath+'?'))fileOperation('delete',{path:filePath});}}><Trash2 size={13}/> Delete</button></div></div><textarea spellCheck="false" value={fileText} onChange={e=>setFileText(e.target.value)}/></>:<div className="file-empty"><Folder size={28}/><b>Select a file to edit</b><span>Files up to 512 KB can be edited here. Use SFTP for larger files.</span></div>}</div>
+    <div className="file-editor">{filePath?<><div className="editor-head"><b>{filePath}</b><div><button className="small-action ghost" disabled={busy} onClick={downloadFile}><Download size={13}/> Download</button><button className="small-action" disabled={busy} onClick={()=>fileOperation('write',{path:filePath,content_base64:encodeBase64(fileText)})}><Save size={13}/> Save</button><button className="small-action danger" disabled={busy} onClick={()=>{if(window.confirm('Delete '+filePath+'?'))fileOperation('delete',{path:filePath});}}><Trash2 size={13}/> Delete</button></div></div><textarea spellCheck="false" value={fileText} onChange={e=>setFileText(e.target.value)}/></>:<div className="file-empty"><Folder size={28}/><b>Select a file to edit</b><span>Files up to 512 KB can be edited here. Use SFTP for larger files.</span></div>}</div>
    </div>
   </div>}
   {busy&&<div className="workspace-busy"><LoaderCircle size={14}/> Waiting for node agent…</div>}
