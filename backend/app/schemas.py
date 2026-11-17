@@ -105,3 +105,22 @@ class BackupAction(BaseModel):
 
 class VersionUpgrade(BaseModel):
     version: str = Field(min_length=3, max_length=16, pattern=r'^\d+\.\d+(\.\d+)?$')
+
+
+ServerPermission = Literal[
+    'server.read', 'control.console', 'control.start', 'control.stop',
+    'control.restart', 'file.read', 'file.write', 'backup.read',
+    'backup.create', 'backup.restore', 'server.manage'
+]
+
+class ServerMemberCreate(BaseModel):
+    email: EmailStr
+    permissions: list[ServerPermission] = Field(min_length=1, max_length=11)
+
+class ServerMemberRead(BaseModel):
+    id: int
+    user_id: int
+    username: str
+    email: EmailStr
+    permissions: list[ServerPermission]
+    created_at: datetime
