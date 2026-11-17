@@ -25,3 +25,18 @@ class AuditEvent(Base):
     detail: Mapped[str] = mapped_column(Text, default='', nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     actor: Mapped[User | None] = relationship(back_populates='audit_events')
+
+class Node(Base):
+    __tablename__ = 'nodes'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
+    fqdn: Mapped[str] = mapped_column(String(255), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    cpu_percent: Mapped[float] = mapped_column(default=0, nullable=False)
+    memory_total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    memory_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    disk_total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    disk_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
