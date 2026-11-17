@@ -129,3 +129,31 @@ def test_console_and_file_tasks_are_node_scoped_and_do_not_change_server_status(
     history = client.get(f'/api/v1/admin/servers/{server_id}/tasks', headers=admin)
     assert history.status_code == 200
     assert history.json()[-1]['status'] == 'completed'
+
+
+def test_validated_minecraft_management_actions():
+    login = client.post('/api/v1/auth/login', json={'email':'admin@example.com','password':'Correct-Horse-123!'}).json()
+    admin = {'Authorization':f"Bearer {login['access_token']}"}
+    enrolled = client.post('/api/v1/admin/nodes', headers=admin, json={'name':'minecraft-controls','fqdn':'mc.example.test'}).json()
+    node_headers = {'X-Node-Token':enrolled['token']}
+    client.post('/api/v1/nodes/heartbeat', headers=node_headers, json={
+        'cpu_percent':2,'memory_total':8*1024**3,'memory_used':1024**3,'disk_total':50*1024**3,'disk_used':5*1024**3
+    })
+    created = client.post('/api/v1/admin/servers', headers=admin, json={
+        'name':'Controls SMP','node_id':enrolled['node']['id'],'memory_mb':1024,'cpu_limit':1
+    }).json()
+    provision = client.get('/api/v1/nodes/tasks', headers=node_headers).json()[0]
+    client.post(f"/api/v1/nodes/tasks/{provision['id']}/result", headers=node_headers, json={'docker_id':'docker-controls'})
+    sid = created['id']
+    valid = client.post(f'/api/v1/admin/servers/{sid}/minecraft/action', headers=admin,
+        json={'action':'whitelist_add','player':'Steve_123'})
+    assert valid.status_code == 202
+    assert valid.json()['command'] == 'whitelist add Steve_123'
+    invalid_name = client.post(f'/api/v1/admin/servers/{sid}/minecraft/action', headers=admin,
+        json={'action':'op','player':'Steve; stop'})
+    assert invalid_name.status_code == 422
+    invalid_value = client.post(f'/api/v1/admin/servers/{sid}/minecraft/action', headers=admin,
+        json={'action':'difficulty','value':'hard; stop'})
+    assert invalid_value.status_code == 422
+    queued = client.get('/api/v1/nodes/tasks', headers=node_headers).json()
+    assert queued[-1]['payload']['command'] == 'whitelist add Steve_123'
