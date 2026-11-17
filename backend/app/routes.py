@@ -1,11 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+import hashlib
+import secrets
+from datetime import datetime, timezone
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.audit import record_event
 from app.database import get_db
 from app.dependencies import get_current_user, require_admin
-from app.models import AuditEvent, User
-from app.schemas import LoginRequest, MessageResponse, TokenResponse, UserCreate, UserRead
+from app.models import AuditEvent, Node, User
+from app.schemas import LoginRequest, MessageResponse, NodeCreate, NodeHeartbeat, NodeRead, TokenResponse, UserCreate, UserRead
 from app.security import DUMMY_HASH, create_access_token, hash_password, verify_password
 
 router = APIRouter()
@@ -69,3 +72,50 @@ def list_audit(_: User = Depends(require_admin), db: Session = Depends(get_db)):
 @router.get('/health', response_model=MessageResponse)
 def health():
     return MessageResponse(message='Lighting Panel API is healthy')
+
+@router.get('/admin/nodes', response_model=list[NodeRead])
+def list_nodes(_: User = Depends(require_admin), db: Session = Depends(get_db)):
+    return list(db.scalars(select(Node).order_by(Node.created_at.desc())).all())
+
+@router.post('/admin/nodes', status_code=status.HTTP_201_CREATED)
+def create_node(payload: NodeCreate, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    if db.scalar(select(Node.id).where(Node.name == payload.name)):
+        raise HTTPException(status_code=409, detail='Node name already exists')
+    token = secrets.token_urlsafe(48)
+    node = Node(name=payload.name, fqdn=payload.fqdn, token_hash=hashlib.sha256(token.encode()).hexdigest())
+    db.add(node)
+    record_event(db, 'admin.node.create', actor, f'Created node {payload.name} ({payload.fqdn})')
+    db.commit()
+    db.refresh(node)
+    return {'node': NodeRead.model_validate(node), 'token': token}
+
+@router.post('/nodes/heartbeat', response_model=NodeRead)
+def node_heartbeat(payload: NodeHeartbeat, x_node_token: str | None = Header(default=None), db: Session = Depends(get_db)):
+    if not x_node_token:
+        raise HTTPException(status_code=401, detail='Node token required')
+    token_hash = hashlib.sha256(x_node_token.encode()).hexdigest()
+    node = db.scalar(select(Node).where(Node.token_hash == token_hash))
+    if node is None or not node.is_enabled:
+        raise HTTPException(status_code=401, detail='Invalid or disabled node credential')
+    if payload.memory_used > payload.memory_total or payload.disk_used > payload.disk_total:
+        raise HTTPException(status_code=422, detail='Used resource values cannot exceed totals')
+    node.cpu_percent = payload.cpu_percent
+    node.memory_total = payload.memory_total
+    node.memory_used = payload.memory_used
+    node.disk_total = payload.disk_total
+    node.disk_used = payload.disk_used
+    node.last_heartbeat = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(node)
+    return node
+
+@router.patch('/admin/nodes/{node_id}/status', response_model=NodeRead)
+def set_node_status(node_id: int, is_enabled: bool, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    node = db.get(Node, node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail='Node not found')
+    node.is_enabled = is_enabled
+    record_event(db, 'admin.node.status', actor, f'Set node {node.name} enabled={is_enabled}')
+    db.commit()
+    db.refresh(node)
+    return node
