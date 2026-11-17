@@ -11,6 +11,11 @@ class Settings(BaseSettings):
     database_url: str = 'sqlite:///./lighting_panel.db'
     access_token_minutes: int = 20
     cors_origins: str = 'http://localhost:5173'
+    frontend_url: str = 'http://localhost:5173'
+    stripe_secret_key: str | None = None
+    stripe_webhook_secret: str | None = None
+    stripe_price_id: str | None = None
+    rate_limit_per_minute: int = 180
 
     @field_validator('secret_key')
     @classmethod
