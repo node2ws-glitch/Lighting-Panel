@@ -4,18 +4,20 @@ Lighting Panel is an independent game-server hosting control plane with a dark, 
 
 ## Implemented foundations
 
-- Responsive React/Vite control-panel UI with animated transitions.
-- FastAPI backend with PostgreSQL support, SQLAlchemy and Alembic.
-- Argon2 password hashing and short-lived JWT authentication.
-- Administrator-protected user directory, account creation and activation controls.
-- Audit events for authentication and administrative actions.
-- VPS node inventory, one-time node enrollment credentials and authenticated telemetry heartbeats.
-- Python node telemetry agent with a systemd installer.
-- GitHub Actions build, backend test and migration checks.
+- Responsive React/Vite panel with animated dark UI and protected sign-in.
+- FastAPI backend with PostgreSQL, SQLAlchemy and Alembic migrations.
+- Argon2 password hashing, short-lived JWT authentication, administrator roles and audit events.
+- VPS node enrollment, one-time node credentials and authenticated CPU/RAM/disk telemetry.
+- Docker-backed Minecraft Java provisioning through the node agent.
+- Persistent per-server Docker volumes, dedicated TCP allocations, CPU/RAM limits and queued start/stop/restart/delete operations.
+- Node task leases for retrying interrupted work.
+- GitHub Actions frontend build, backend tests and migration checks.
 
-## Important current boundaries
+## Current runtime boundaries
 
-The login and user administration screens use the real API. Node enrollment and telemetry are implemented end-to-end at the API/agent layer and the node inventory UI displays live heartbeat data. The server cards on the overview and server list are still local demonstration data: no customer server is deployed or controlled yet. Docker lifecycle, live console, file manager, SFTP, backups, schedules, databases, billing and full production security are subsequent implementation phases. Do not advertise server deployment as available until the runtime and lifecycle APIs are complete.
+The server list, deployment form and lifecycle controls use the real API and node task queue. A connected Linux node with Docker Engine and the current agent can provision Minecraft Java (Paper) containers. Provisioning is asynchronous: the node pulls the Minecraft image and reports completion to the panel.
+
+This is an early single-node runtime, not yet a production-hardened Pterodactyl replacement. Console streaming, file manager/SFTP, backups, schedules, database provisioning, multi-allocation management, per-customer permissions, billing, disk quotas, image update policy, firewall automation, token rotation and comprehensive container health reconciliation remain future phases. The dashboard overview still contains sample analytics and needs to be connected to live aggregate metrics. Do not expose this deployment to untrusted tenants until the remaining isolation and operational controls are implemented.
 
 ## Requirements
 
@@ -81,11 +83,11 @@ SECRET_KEY=local-test-secret-key-at-least-32-bytes DATABASE_URL=sqlite:///./migr
 
 1. Dashboard and responsive visual system — foundation present.
 2. Authentication, roles and audit trail — implemented foundation.
-3. API and database integration — implemented foundation; expand resources and operations.
-4. VPS node enrollment and telemetry — implemented foundation; runtime agent hardening remains.
-5. Docker-backed server provisioning and lifecycle.
+3. API and database integration — implemented foundation.
+4. VPS node enrollment and telemetry — implemented foundation.
+5. Docker-backed Minecraft provisioning and lifecycle — implemented initial runtime.
 6. Live console, file manager and SFTP.
-7. Minecraft server management, versions and server properties.
+7. Minecraft server configuration, versions and server properties.
 8. Backups, schedules, databases and allocations.
 9. Subusers, granular permissions and customer management.
 10. Billing, observability, rate limits, security audit and production deployment.
