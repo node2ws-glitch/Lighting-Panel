@@ -109,3 +109,13 @@ The project should only mark a phase complete after its tests and end-to-end acc
 - Minecraft version upgrades use the fixed Paper image, validate release version syntax, create a pre-upgrade snapshot, and recreate the managed container while retaining its persistent named volume, port, and resource limits.
 - Snapshots are node-local, capped at 20 GiB of uncompressed server data per snapshot, and are not off-site disaster recovery. Automated schedules and remote object storage are not included in this phase.
 - Update and restart the node agent on every VPS before using backups or upgrades.
+
+## Phase 9 — customer ownership and server team permissions
+
+- Administrators can deploy a server for an existing active customer account by supplying that account's email as the optional owner email. Customers can see only servers they own or that have been shared with them.
+- Server owners can grant an existing non-admin account access to one server. No invitation email is sent; the recipient must already have an active Lighting Panel account.
+- Every membership receives `server.read` plus only the selected grants: console, start/stop/restart, file read/write, backup read/create/restore, and Minecraft management/version upgrades.
+- Server-specific API routes check the required permission on every request. Panel administrator accounts retain administrative access. Team members cannot manage membership, access VPS node administration, create servers, or delete the owner's server.
+- Owners can list and revoke team memberships. Grants are stored in a dedicated `server_subusers` table with a unique server/user pair and foreign-key cleanup.
+- Apply the new database migration with `cd backend && alembic upgrade head` before starting the updated API.
+- The phase does not include email invitations, customer billing, quotas, or customer self-service provisioning.
