@@ -52,3 +52,27 @@ class NodeHeartbeat(BaseModel):
     memory_used: int = Field(ge=0)
     disk_total: int = Field(ge=0)
     disk_used: int = Field(ge=0)
+
+class ServerCreate(BaseModel):
+    name: str = Field(min_length=3, max_length=48, pattern=r'^[a-zA-Z0-9 _.-]+$')
+    node_id: int = Field(gt=0)
+    version: str = Field(default='LATEST', max_length=24, pattern=r'^(LATEST|[0-9]+\.[0-9]+(\.[0-9]+)?)$')
+    memory_mb: int = Field(default=2048, ge=512, le=16384)
+    cpu_limit: float = Field(default=2.0, ge=0.5, le=16)
+
+class ServerRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    node_id: int
+    name: str
+    game: str
+    version: str
+    memory_mb: int
+    cpu_limit: float
+    allocation_port: int
+    status: str
+    last_error: str | None
+    created_at: datetime
+
+class ServerAction(BaseModel):
+    action: str = Field(pattern=r'^(start|stop|restart|delete)$')
