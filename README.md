@@ -99,3 +99,13 @@ SECRET_KEY=local-test-secret-key-at-least-32-bytes DATABASE_URL=sqlite:///./migr
 10. Billing, observability, rate limits, security audit and production deployment.
 
 The project should only mark a phase complete after its tests and end-to-end acceptance checks pass.
+
+
+## Phase 8 — backups and version upgrades
+
+- Admins can queue create/list/restore operations for per-server snapshots from the server workspace.
+- The node agent stores compressed archives under `/var/lib/lighting-panel/backups/<server-id>`, outside the server data volume, with mode-0700 directories.
+- Restore validates archive member paths and rejects symlinks, hardlinks, devices, and path traversal. A pre-restore snapshot is created before existing world data is replaced.
+- Minecraft version upgrades use the fixed Paper image, validate release version syntax, create a pre-upgrade snapshot, and recreate the managed container while retaining its persistent named volume, port, and resource limits.
+- Snapshots are node-local, capped at 20 GiB of uncompressed server data per snapshot, and are not off-site disaster recovery. Automated schedules and remote object storage are not included in this phase.
+- Update and restart the node agent on every VPS before using backups or upgrades.
