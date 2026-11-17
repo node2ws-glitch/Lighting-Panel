@@ -66,5 +66,6 @@ class NodeTask(Base):
     payload: Mapped[str] = mapped_column(Text, default='{}', nullable=False)
     status: Mapped[str] = mapped_column(String(16), default='pending', nullable=False, index=True)
     result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
