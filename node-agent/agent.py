@@ -5,7 +5,7 @@ import os
 import socket
 import sys
 import time
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 import docker
 import psutil
@@ -62,6 +62,8 @@ def run_file_operation(container, payload):
             raise ValueError('Directory does not exist')
         entries = []
         for item in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))[:200]:
+            if item.is_symlink():
+                continue
             entries.append({'name':item.name,'path':item.relative_to(Path('/data')).as_posix(),'directory':item.is_dir(),
                 'size':item.stat().st_size if item.is_file() else 0,'modified':int(item.stat().st_mtime)})
         return {'entries':entries,'path':target.relative_to(Path('/data')).as_posix() or '.'}
