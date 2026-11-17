@@ -6,6 +6,8 @@ from app.database import engine
 from app import models  # noqa: F401
 from app.middleware import SecurityAndRateLimitMiddleware
 from app.routes import router
+from app.billing import router as billing_router
+from app.operations import router as operations_router
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -24,6 +26,8 @@ app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origin_list, allo
     allow_methods=['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
     allow_headers=['Authorization', 'Content-Type', 'Stripe-Signature', 'X-Node-Token', 'X-Request-ID'])
 app.include_router(router, prefix=settings.api_prefix)
+app.include_router(billing_router, prefix=settings.api_prefix)
+app.include_router(operations_router, prefix=settings.api_prefix)
 
 @app.get('/')
 def root():
