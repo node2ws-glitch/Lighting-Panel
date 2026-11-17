@@ -1,7 +1,7 @@
 import hashlib
 import json
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -121,6 +121,14 @@ def set_node_status(node_id: int, is_enabled: bool, actor: User = Depends(requir
     db.refresh(node)
     return node
 
+def node_is_recent(node: Node) -> bool:
+    if node.last_heartbeat is None:
+        return False
+    stamp = node.last_heartbeat
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - stamp).total_seconds() <= 90
+
 def authenticate_node(x_node_token: str | None, db: Session) -> Node:
     if not x_node_token:
         raise HTTPException(status_code=401, detail='Node token required')
@@ -139,7 +147,7 @@ def create_server(payload: ServerCreate, actor: User = Depends(require_admin), d
     node = db.get(Node, payload.node_id)
     if node is None or not node.is_enabled:
         raise HTTPException(status_code=400, detail='Choose an enabled node')
-    if node.last_heartbeat is None or (datetime.now(timezone.utc) - node.last_heartbeat).total_seconds() > 90:
+    if not node_is_recent(node):
         raise HTTPException(status_code=409, detail='Node is offline or has no recent heartbeat')
     if payload.memory_mb * 1024 * 1024 > node.memory_total - node.memory_used:
         raise HTTPException(status_code=409, detail='Node does not have enough reported free memory')
@@ -165,7 +173,7 @@ def server_action(server_id: int, payload: ServerAction, actor: User = Depends(r
     if server is None:
         raise HTTPException(status_code=404, detail='Server not found')
     node = db.get(Node, server.node_id)
-    if node is None or not node.is_enabled or node.last_heartbeat is None or (datetime.now(timezone.utc)-node.last_heartbeat).total_seconds()>90:
+    if node is None or not node.is_enabled or not node_is_recent(node):
         raise HTTPException(status_code=409, detail='Server node is offline')
     if server.status == 'installing':
         raise HTTPException(status_code=409, detail='Server provisioning is still in progress')
@@ -184,10 +192,17 @@ def server_action(server_id: int, payload: ServerAction, actor: User = Depends(r
 @router.get('/nodes/tasks')
 def claim_node_tasks(x_node_token: str | None = Header(default=None), db: Session = Depends(get_db)):
     node = authenticate_node(x_node_token, db)
+    now = datetime.now(timezone.utc)
+    stale_before = now - timedelta(minutes=2)
+    stale_tasks = db.scalars(select(NodeTask).where(NodeTask.node_id == node.id, NodeTask.status == 'claimed', NodeTask.claimed_at < stale_before)).all()
+    for stale in stale_tasks:
+        stale.status = 'pending'
+        stale.claimed_at = None
     tasks = list(db.scalars(select(NodeTask).where(NodeTask.node_id == node.id, NodeTask.status == 'pending').order_by(NodeTask.id).limit(5)).all())
     output = []
     for task in tasks:
         task.status = 'claimed'
+        task.claimed_at = now
         output.append({'id':task.id,'server_id':task.server_id,'action':task.action,'payload':json.loads(task.payload)})
     db.commit()
     return output
