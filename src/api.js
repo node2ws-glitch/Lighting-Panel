@@ -40,3 +40,5 @@ export const sendConsoleCommand = (id, command) => request('/admin/servers/' + i
 export const requestConsoleLogs = (id) => request('/admin/servers/' + id + '/console/logs', { method: 'POST' });
 export const operateServerFiles = (id, payload) => request('/admin/servers/' + id + '/files', { method: 'POST', body: JSON.stringify(payload) });
 export const listServerTasks = (id) => request('/admin/servers/' + id + '/tasks');
+
+export const getServerTask = (serverId, taskId) => request('/admin/servers/' + serverId + '/tasks/' + taskId);
