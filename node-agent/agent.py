@@ -71,7 +71,7 @@ def run_task(client, task):
             IMAGE,
             name=name,
             detach=True,
-            environment={'EULA':'TRUE','TYPE':'PAPER','VERSION':version,'MEMORY':f'{memory_mb}M','TZ':'UTC'},
+            environment={'EULA':'TRUE','TYPE':'PAPER','VERSION':version,'MEMORY':f'{int(memory_mb * 0.8)}M','TZ':'UTC'},
             ports={'25565/tcp':('0.0.0.0',port)},
             volumes={volume:{'bind':'/data','mode':'rw'}},
             mem_limit=f'{memory_mb}m',
@@ -82,7 +82,7 @@ def run_task(client, task):
             stdin_open=True,
             labels={LABEL_OWNER:'true','net.lightingpanel.server-id':str(server_id)},
             restart_policy={'Name':'unless-stopped'},
-            cap_drop=['ALL'],
+            cap_drop=['NET_RAW','SYS_CHROOT','MKNOD'],
             security_opt=['no-new-privileges:true'],
         )
         return {'docker_id':container.id}
