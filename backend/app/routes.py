@@ -216,20 +216,17 @@ def finish_node_task(task_id: int, payload: NodeTaskResult, x_node_token: str | 
     task.status = 'failed' if payload.error else 'completed'
     task.result = json.dumps({'docker_id':payload.docker_id,'error':payload.error,'data':payload.data})
     task.completed_at = datetime.now(timezone.utc)
-    if task.server_id:
+    if task.server_id and task.action in ('provision','start','stop','restart','delete'):
         server = db.get(GameServer, task.server_id)
         if server:
-            if task.action in ('provision','start','stop','restart','delete'):
-                server.docker_id = payload.docker_id or server.docker_id
-                server.last_error = payload.error
+            server.docker_id = payload.docker_id or server.docker_id
+            server.last_error = payload.error
             if task.action == 'delete' and not payload.error:
                 db.delete(server)
-            elif payload.error and task.action in ('provision','start','stop','restart','delete'):
+            elif payload.error:
                 server.status = 'error'
             elif task.action == 'stop':
                 server.status = 'offline'
-            elif task.action == 'delete':
-                server.status = 'deleted'
             else:
                 server.status = 'online'
     db.commit()
