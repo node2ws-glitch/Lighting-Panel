@@ -157,3 +157,27 @@ def test_validated_minecraft_management_actions():
     assert invalid_value.status_code == 422
     queued = client.get('/api/v1/nodes/tasks', headers=node_headers).json()
     assert queued[-1]['payload']['command'] == 'whitelist add Steve_123'
+
+
+def test_backups_and_version_upgrade_are_queued_and_validated():
+    login = client.post('/api/v1/auth/login', json={'email':'admin@example.com','password':'Correct-Horse-123!'}).json()
+    admin = {'Authorization':f"Bearer {login['access_token']}"}
+    enrolled = client.post('/api/v1/admin/nodes', headers=admin, json={'name':'phase-eight-node','fqdn':'phase-eight.example.test'}).json()
+    node_headers = {'X-Node-Token':enrolled['token']}
+    client.post('/api/v1/nodes/heartbeat', headers=node_headers, json={
+        'cpu_percent':1,'memory_total':8*1024**3,'memory_used':1024**3,'disk_total':80*1024**3,'disk_used':5*1024**3
+    })
+    created = client.post('/api/v1/admin/servers', headers=admin, json={
+        'name':'Backup SMP','node_id':enrolled['node']['id'],'memory_mb':1024,'cpu_limit':1,'version':'1.21.4'
+    }).json()
+    provision = client.get('/api/v1/nodes/tasks', headers=node_headers).json()[0]
+    client.post(f"/api/v1/nodes/tasks/{provision['id']}/result", headers=node_headers, json={'docker_id':'docker-backup'})
+    sid = created['id']
+    backup = client.post(f'/api/v1/admin/servers/{sid}/backups', headers=admin, json={'action':'create'})
+    assert backup.status_code == 202
+    version = client.post(f'/api/v1/admin/servers/{sid}/version', headers=admin, json={'version':'1.21.1'})
+    assert version.status_code == 202
+    assert client.post(f'/api/v1/admin/servers/{sid}/version', headers=admin, json={'version':'bad;command'}).status_code == 422
+    assert client.post(f'/api/v1/admin/servers/{sid}/backups', headers=admin, json={'action':'restore'}).status_code == 422
+    queued = client.get('/api/v1/nodes/tasks', headers=node_headers).json()
+    assert {task['action'] for task in queued} >= {'backup_create','version_upgrade'}
