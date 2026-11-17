@@ -29,3 +29,16 @@
 
 /* Phase 8 — backup and version management */
 .backup-manager{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(250px,.8fr);gap:12px}.backup-card{min-width:0;padding:16px;border:1px solid #2c3349;border-radius:9px;background:#0d121e}.backup-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.backup-heading b,.backup-card>b{display:block;color:#dce2f2;font-size:11px}.backup-heading small,.backup-card>small{display:block;margin-top:5px;color:#7f8aa2;font-size:9px;line-height:1.6}.backup-list{margin-top:14px}.backup-row{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid #252c40}.backup-symbol{width:32px;height:32px;display:grid;place-items:center;border:1px solid #40355f;border-radius:7px;color:#b8a2ff;background:#29203f}.backup-meta{flex:1;min-width:0}.backup-meta b{display:block;color:#d5d9e8;font-size:10px}.backup-meta small{display:block;margin-top:4px;color:#7f8aa2;font-size:8px;overflow-wrap:anywhere}.backup-empty{padding:25px 12px;text-align:center;color:#8791a8;font-size:9px;line-height:1.7}.version-controls{display:flex;gap:8px;margin-top:16px}.version-controls select{flex:1;min-width:0;height:34px;padding:0 9px;border:1px solid #30364b;border-radius:6px;background:#090e18;color:#eef0fa;font-size:10px}.backup-warning{display:block;margin-top:14px!important;color:#d8bd79!important}.backup-manager .small-action{white-space:nowrap}@media(max-width:760px){.backup-manager{grid-template-columns:1fr}}@media(max-width:420px){.backup-heading{align-items:flex-start;flex-direction:column}.version-controls{flex-direction:column}}
+
+/* Phase 9 — scoped server team access */
+.members-manager{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,.9fr);gap:12px}
+.member-invite-form{display:grid;gap:13px;margin-top:14px}
+.member-invite-form>input{height:38px;padding:0 11px;border:1px solid #30364b;border-radius:7px;background:#090e18;color:#eef0fa;font-size:10px}
+.permission-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.permission-grid label{display:flex;align-items:flex-start;gap:8px;color:#aeb8cb;font-size:9px;line-height:1.5}
+.permission-grid input{accent-color:#9678ff;margin:1px 0 0;flex:none}
+.members-manager .backup-card{min-width:0}
+.members-manager .backup-row{align-items:flex-start}
+.members-manager .backup-meta small{line-height:1.6;white-space:normal}
+@media(max-width:760px){.members-manager{grid-template-columns:1fr}}
+@media(max-width:420px){.permission-grid{grid-template-columns:1fr}}
