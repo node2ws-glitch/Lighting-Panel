@@ -3,13 +3,13 @@ import json
 import secrets
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, Header, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from sqlalchemy.orm import Session
 from app.audit import record_event
 from app.database import get_db
 from app.dependencies import get_current_user, require_admin
-from app.models import AuditEvent, GameServer, Node, NodeTask, User
-from app.schemas import LoginRequest, MessageResponse, NodeCreate, NodeHeartbeat, NodeRead, NodeTaskResult, ServerAction, ServerCreate, ServerRead, TokenResponse, UserCreate, UserRead, ConsoleCommand, ServerFileRequest, MinecraftAction, BackupAction, VersionUpgrade
+from app.models import AuditEvent, GameServer, Node, NodeTask, User, ServerSubuser
+from app.schemas import LoginRequest, MessageResponse, NodeCreate, NodeHeartbeat, NodeRead, NodeTaskResult, ServerAction, ServerCreate, ServerRead, TokenResponse, UserCreate, UserRead, ConsoleCommand, ServerFileRequest, MinecraftAction, BackupAction, VersionUpgrade, ServerMemberCreate
 from app.security import DUMMY_HASH, create_access_token, hash_password, verify_password
 
 router = APIRouter()
@@ -139,8 +139,11 @@ def authenticate_node(x_node_token: str | None, db: Session) -> Node:
     return node
 
 @router.get('/admin/servers', response_model=list[ServerRead])
-def list_servers(_: User = Depends(require_admin), db: Session = Depends(get_db)):
-    return list(db.scalars(select(GameServer).order_by(GameServer.created_at.desc()).limit(500)).all())
+def list_servers(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    query = select(GameServer).order_by(GameServer.created_at.desc()).limit(500)
+    if actor.role != 'admin':
+        query = select(GameServer).outerjoin(ServerSubuser, ServerSubuser.server_id == GameServer.id).where(or_(GameServer.owner_id == actor.id, ServerSubuser.user_id == actor.id)).order_by(GameServer.created_at.desc()).limit(500)
+    return list(db.scalars(query).unique().all())
 
 @router.post('/admin/servers', response_model=ServerRead, status_code=status.HTTP_202_ACCEPTED)
 def create_server(payload: ServerCreate, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
@@ -168,10 +171,11 @@ def create_server(payload: ServerCreate, actor: User = Depends(require_admin), d
     return server
 
 @router.post('/admin/servers/{server_id}/action', response_model=ServerRead, status_code=status.HTTP_202_ACCEPTED)
-def server_action(server_id: int, payload: ServerAction, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
-    server = db.get(GameServer, server_id)
-    if server is None:
-        raise HTTPException(status_code=404, detail='Server not found')
+def server_action(server_id: int, payload: ServerAction, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    permission = {'start':'control.start','stop':'control.stop','restart':'control.restart','delete':'server.manage'}[payload.action]
+    server = require_server_permission(server_id, actor, permission, db)
+    if payload.action == 'delete' and actor.role != 'admin' and server.owner_id != actor.id:
+        raise HTTPException(status_code=403, detail='Only the server owner can delete this server')
     node = db.get(Node, server.node_id)
     if node is None or not node.is_enabled or not node_is_recent(node):
         raise HTTPException(status_code=409, detail='Server node is offline')
@@ -236,10 +240,20 @@ def finish_node_task(task_id: int, payload: NodeTaskResult, x_node_token: str | 
     return {'accepted':True}
 
 
-def get_managed_server(server_id: int, db: Session) -> tuple[GameServer, Node]:
+def require_server_permission(server_id: int, actor: User, permission: str, db: Session) -> GameServer:
     server = db.get(GameServer, server_id)
     if server is None:
         raise HTTPException(status_code=404, detail='Server not found')
+    if actor.role == 'admin' or server.owner_id == actor.id:
+        return server
+    membership = db.scalar(select(ServerSubuser).where(ServerSubuser.server_id == server_id, ServerSubuser.user_id == actor.id))
+    granted = set(json.loads(membership.permissions)) if membership else set()
+    if permission not in granted:
+        raise HTTPException(status_code=403, detail='You do not have permission to perform this action')
+    return server
+
+def get_managed_server(server_id: int, db: Session, actor: User, permission: str) -> tuple[GameServer, Node]:
+    server = require_server_permission(server_id, actor, permission, db)
     node = db.get(Node, server.node_id)
     if node is None or not node.is_enabled or not node_is_recent(node):
         raise HTTPException(status_code=409, detail='Server node is offline')
@@ -248,8 +262,8 @@ def get_managed_server(server_id: int, db: Session) -> tuple[GameServer, Node]:
     return server, node
 
 @router.post('/admin/servers/{server_id}/console', status_code=status.HTTP_202_ACCEPTED)
-def send_console_command(server_id: int, payload: ConsoleCommand, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
-    server, node = get_managed_server(server_id, db)
+def send_console_command(server_id: int, payload: ConsoleCommand, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    server, node = get_managed_server(server_id, db, actor, 'control.console')
     command = payload.command.strip()
     if not command or command.startswith('/') or len(command) > 512 or any(ord(ch) < 32 for ch in command):
         raise HTTPException(status_code=422, detail='Enter a valid Minecraft command without the leading slash')
@@ -261,8 +275,8 @@ def send_console_command(server_id: int, payload: ConsoleCommand, actor: User = 
     return {'task_id':task.id,'status':task.status}
 
 @router.post('/admin/servers/{server_id}/console/logs', status_code=status.HTTP_202_ACCEPTED)
-def request_console_logs(server_id: int, _: User = Depends(require_admin), db: Session = Depends(get_db)):
-    server, node = get_managed_server(server_id, db)
+def request_console_logs(server_id: int, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    server, node = get_managed_server(server_id, db, actor, 'control.console')
     latest = db.scalar(select(NodeTask).where(NodeTask.server_id == server.id, NodeTask.action == 'console_logs').order_by(NodeTask.id.desc()).limit(1))
     if latest and latest.status in ('pending','claimed'):
         return {'task_id':latest.id,'status':latest.status}
@@ -277,8 +291,9 @@ def request_console_logs(server_id: int, _: User = Depends(require_admin), db: S
     return {'task_id':task.id,'status':task.status}
 
 @router.post('/admin/servers/{server_id}/files', status_code=status.HTTP_202_ACCEPTED)
-def operate_server_files(server_id: int, payload: ServerFileRequest, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
-    server, node = get_managed_server(server_id, db)
+def operate_server_files(server_id: int, payload: ServerFileRequest, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    permission = 'file.read' if payload.operation in ('list','read') else 'file.write'
+    server, node = get_managed_server(server_id, db, actor, permission)
     if payload.operation == 'write' and payload.content_base64 is None:
         raise HTTPException(status_code=422, detail='File content is required')
     if payload.operation == 'rename' and not payload.destination:
@@ -293,8 +308,8 @@ def operate_server_files(server_id: int, payload: ServerFileRequest, actor: User
 
 
 @router.post('/admin/servers/{server_id}/minecraft/action', status_code=status.HTTP_202_ACCEPTED)
-def minecraft_action(server_id: int, payload: MinecraftAction, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
-    server, node = get_managed_server(server_id, db)
+def minecraft_action(server_id: int, payload: MinecraftAction, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    server, node = get_managed_server(server_id, db, actor, 'server.manage')
     action = payload.action
     if action in ('whitelist_add', 'whitelist_remove', 'op', 'deop'):
         if not payload.player:
@@ -333,8 +348,9 @@ def minecraft_action(server_id: int, payload: MinecraftAction, actor: User = Dep
 
 
 @router.post('/admin/servers/{server_id}/backups', status_code=status.HTTP_202_ACCEPTED)
-def manage_server_backups(server_id: int, payload: BackupAction, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
-    server, node = get_managed_server(server_id, db)
+def manage_server_backups(server_id: int, payload: BackupAction, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    permission = {'list':'backup.read','create':'backup.create','restore':'backup.restore'}[payload.action]
+    server, node = get_managed_server(server_id, db, actor, permission)
     if payload.action == 'restore' and not payload.backup_id:
         raise HTTPException(status_code=422, detail='Choose a backup to restore')
     task_action = {'create':'backup_create','list':'backup_list','restore':'backup_restore'}[payload.action]
@@ -347,8 +363,8 @@ def manage_server_backups(server_id: int, payload: BackupAction, actor: User = D
     return {'task_id':task.id,'status':task.status}
 
 @router.post('/admin/servers/{server_id}/version', status_code=status.HTTP_202_ACCEPTED)
-def upgrade_server_version(server_id: int, payload: VersionUpgrade, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
-    server, node = get_managed_server(server_id, db)
+def upgrade_server_version(server_id: int, payload: VersionUpgrade, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    server, node = get_managed_server(server_id, db, actor, 'server.manage')
     if server.game != 'minecraft':
         raise HTTPException(status_code=400, detail='Version upgrades are only available for Minecraft servers')
     if payload.version == server.version:
@@ -363,9 +379,8 @@ def upgrade_server_version(server_id: int, payload: VersionUpgrade, actor: User 
     return {'task_id':task.id,'status':task.status,'version':payload.version}
 
 @router.get('/admin/servers/{server_id}/tasks')
-def list_server_tasks(server_id: int, _: User = Depends(require_admin), db: Session = Depends(get_db)):
-    if db.get(GameServer, server_id) is None:
-        raise HTTPException(status_code=404, detail='Server not found')
+def list_server_tasks(server_id: int, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    require_server_permission(server_id, actor, 'server.read', db)
     tasks = db.scalars(select(NodeTask).where(NodeTask.server_id == server_id).order_by(NodeTask.id.desc()).limit(40)).all()
     output = []
     for task in reversed(tasks):
@@ -376,8 +391,54 @@ def list_server_tasks(server_id: int, _: User = Depends(require_admin), db: Sess
     return output
 
 @router.get('/admin/servers/{server_id}/tasks/{task_id}')
-def get_server_task(server_id: int, task_id: int, _: User = Depends(require_admin), db: Session = Depends(get_db)):
+def get_server_task(server_id: int, task_id: int, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    require_server_permission(server_id, actor, 'server.read', db)
     task = db.get(NodeTask, task_id)
     if task is None or task.server_id != server_id:
         raise HTTPException(status_code=404, detail='Server task not found')
     return {'id':task.id,'action':task.action,'status':task.status,'result':json.loads(task.result) if task.result else None,'created_at':task.created_at,'completed_at':task.completed_at}
+
+def require_server_owner(server_id: int, actor: User, db: Session) -> GameServer:
+    server = db.get(GameServer, server_id)
+    if server is None:
+        raise HTTPException(status_code=404, detail='Server not found')
+    if actor.role != 'admin' and server.owner_id != actor.id:
+        raise HTTPException(status_code=403, detail='Only the server owner can manage team access')
+    return server
+
+@router.get('/admin/servers/{server_id}/members')
+def list_server_members(server_id: int, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    require_server_owner(server_id, actor, db)
+    rows = db.execute(select(ServerSubuser, User).join(User, User.id == ServerSubuser.user_id).where(ServerSubuser.server_id == server_id).order_by(ServerSubuser.created_at.asc())).all()
+    return [{'id': m.id, 'user_id': u.id, 'username': u.username, 'email': u.email, 'permissions': json.loads(m.permissions), 'created_at': m.created_at} for m, u in rows]
+
+@router.post('/admin/servers/{server_id}/members', status_code=status.HTTP_201_CREATED)
+def add_server_member(server_id: int, payload: ServerMemberCreate, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    require_server_owner(server_id, actor, db)
+    member = db.scalar(select(User).where(User.email == str(payload.email).lower()))
+    if member is None or not member.is_active:
+        raise HTTPException(status_code=404, detail='An active account with this email must exist first')
+    server = db.get(GameServer, server_id)
+    if member.id == actor.id or member.id == server.owner_id:
+        raise HTTPException(status_code=400, detail='The server owner cannot be added as a subuser')
+    if member.role == 'admin':
+        raise HTTPException(status_code=400, detail='Administrator accounts already have full panel access')
+    if db.scalar(select(ServerSubuser).where(ServerSubuser.server_id == server_id, ServerSubuser.user_id == member.id)):
+        raise HTTPException(status_code=409, detail='This account already has access to the server')
+    permissions = sorted(set(payload.permissions))
+    membership = ServerSubuser(server_id=server_id, user_id=member.id, permissions=json.dumps(permissions), created_by=actor.id)
+    db.add(membership)
+    record_event(db, 'server.member.add', actor, 'Granted server ' + str(server_id) + ' access to user ' + str(member.id) + ': ' + ','.join(permissions))
+    db.commit()
+    db.refresh(membership)
+    return {'id':membership.id,'user_id':member.id,'username':member.username,'email':member.email,'permissions':permissions,'created_at':membership.created_at}
+
+@router.delete('/admin/servers/{server_id}/members/{membership_id}', status_code=status.HTTP_204_NO_CONTENT)
+def remove_server_member(server_id: int, membership_id: int, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    require_server_owner(server_id, actor, db)
+    membership = db.scalar(select(ServerSubuser).where(ServerSubuser.id == membership_id, ServerSubuser.server_id == server_id))
+    if membership is None:
+        raise HTTPException(status_code=404, detail='Server member not found')
+    db.delete(membership)
+    record_event(db, 'server.member.remove', actor, 'Revoked membership ' + str(membership_id) + ' from server ' + str(server_id))
+    db.commit()
