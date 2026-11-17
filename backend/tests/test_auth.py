@@ -61,3 +61,42 @@ def test_node_enrollment_and_heartbeat():
     assert heartbeat.status_code == 200
     assert heartbeat.json()['cpu_percent'] == 12.5
     assert client.get('/api/v1/admin/nodes', headers=headers).json()[0]['name'] == 'test-node'
+
+def test_minecraft_server_provisioning_and_stop_queue():
+    login = client.post('/api/v1/auth/login', json={'email':'admin@example.com','password':'Correct-Horse-123!'}).json()
+    admin = {'Authorization':f"Bearer {login['access_token']}"}
+    enrolled = client.post('/api/v1/admin/nodes', headers=admin, json={'name':'docker-node','fqdn':'docker.example.test'})
+    assert enrolled.status_code == 201
+    node_token = enrolled.json()['token']
+    node_headers = {'X-Node-Token':node_token}
+    heartbeat = client.post('/api/v1/nodes/heartbeat', headers=node_headers, json={
+        'cpu_percent':8,'memory_total':8*1024**3,'memory_used':1024**3,'disk_total':100*1024**3,'disk_used':10*1024**3
+    })
+    assert heartbeat.status_code == 200
+    created = client.post('/api/v1/admin/servers', headers=admin, json={
+        'name':'Test SMP','node_id':enrolled.json()['node']['id'],'version':'1.21.4','memory_mb':2048,'cpu_limit':2
+    })
+    assert created.status_code == 202
+    server_id = created.json()['id']
+    tasks = client.get('/api/v1/nodes/tasks', headers=node_headers)
+    assert tasks.status_code == 200
+    assert tasks.json()[0]['action'] == 'provision'
+    task_id = tasks.json()[0]['id']
+    result = client.post(f'/api/v1/nodes/tasks/{task_id}/result', headers=node_headers, json={'docker_id':'fake-docker-id'})
+    assert result.status_code == 200
+    assert client.get('/api/v1/admin/servers', headers=admin).json()[0]['status'] == 'online'
+    stopped = client.post(f'/api/v1/admin/servers/{server_id}/action', headers=admin, json={'action':'stop'})
+    assert stopped.status_code == 202
+    stop_task = client.get('/api/v1/nodes/tasks', headers=node_headers).json()[0]
+    assert stop_task['action'] == 'stop'
+    client.post(f"/api/v1/nodes/tasks/{stop_task['id']}/result", headers=node_headers, json={'docker_id':'fake-docker-id'})
+    assert client.get('/api/v1/admin/servers', headers=admin).json()[0]['status'] == 'offline'
+
+def test_server_creation_rejects_offline_node():
+    login = client.post('/api/v1/auth/login', json={'email':'admin@example.com','password':'Correct-Horse-123!'}).json()
+    admin = {'Authorization':f"Bearer {login['access_token']}"}
+    enrolled = client.post('/api/v1/admin/nodes', headers=admin, json={'name':'offline-node','fqdn':'offline.example.test'}).json()
+    response = client.post('/api/v1/admin/servers', headers=admin, json={
+        'name':'Should Not Deploy','node_id':enrolled['node']['id'],'memory_mb':1024,'cpu_limit':1
+    })
+    assert response.status_code == 409
