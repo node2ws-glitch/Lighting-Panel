@@ -1,10 +1,11 @@
+import base64
 import json
 import logging
 import os
 import socket
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import docker
 import psutil
@@ -39,6 +40,89 @@ def sample():
 
 def container_name(server_id):
     return f'lighting-server-{int(server_id)}'
+
+
+def safe_server_path(relative):
+    root = Path('/data').resolve()
+    candidate = (root / str(relative)).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        raise ValueError('Path must remain inside the server data directory')
+    if candidate == root and str(relative) not in ('.', './', ''):
+        raise ValueError('Invalid server file path')
+    return candidate
+
+def run_file_operation(container, payload):
+    operation = payload.get('operation')
+    relative = payload.get('path', '.')
+    target = safe_server_path(relative)
+    if operation == 'list':
+        if not target.exists() or not target.is_dir():
+            raise ValueError('Directory does not exist')
+        entries = []
+        for item in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))[:200]:
+            entries.append({'name':item.name,'path':item.relative_to(Path('/data')).as_posix(),'directory':item.is_dir(),
+                'size':item.stat().st_size if item.is_file() else 0,'modified':int(item.stat().st_mtime)})
+        return {'entries':entries,'path':target.relative_to(Path('/data')).as_posix() or '.'}
+    if operation == 'read':
+        if not target.is_file():
+            raise ValueError('File does not exist')
+        if target.stat().st_size > 512 * 1024:
+            raise ValueError('File exceeds the 512 KB editor limit; use SFTP for large files')
+        return {'path':target.relative_to(Path('/data')).as_posix(),'content_base64':base64.b64encode(target.read_bytes()).decode('ascii')}
+    if operation == 'write':
+        if target.exists() and not target.is_file():
+            raise ValueError('Target is not a regular file')
+        encoded = payload.get('content_base64')
+        if not isinstance(encoded, str):
+            raise ValueError('File content is missing')
+        try:
+            content = base64.b64decode(encoded, validate=True)
+        except Exception:
+            raise ValueError('File content encoding is invalid')
+        if len(content) > 512 * 1024:
+            raise ValueError('File exceeds the 512 KB editor limit')
+        if not target.parent.exists() or not target.parent.is_dir():
+            raise ValueError('Parent directory does not exist')
+        target.write_bytes(content)
+        return {'path':target.relative_to(Path('/data')).as_posix(),'bytes_written':len(content)}
+    if operation == 'mkdir':
+        if target.exists():
+            raise ValueError('Path already exists')
+        target.mkdir()
+        return {'path':target.relative_to(Path('/data')).as_posix()}
+    if operation == 'delete':
+        if not target.is_file():
+            raise ValueError('Only individual files can be deleted from the panel')
+        target.unlink()
+        return {'deleted':relative}
+    if operation == 'rename':
+        destination = safe_server_path(payload.get('destination', ''))
+        if not target.exists() or destination.exists() or not destination.parent.is_dir():
+            raise ValueError('Source or destination is invalid')
+        target.rename(destination)
+        return {'path':destination.relative_to(Path('/data')).as_posix()}
+    raise ValueError('Unsupported file operation')
+
+def run_console_operation(container, action, payload):
+    if container.status != 'running':
+        raise RuntimeError('Minecraft container is not running')
+    if action == 'console':
+        command = str(payload.get('command', '')).strip()
+        if not command or len(command) > 512 or any(ord(ch) < 32 for ch in command):
+            raise ValueError('Invalid console command')
+        stream = container.attach_socket(params={'stdin':1,'stream':1,'logs':0})
+        try:
+            sock = getattr(stream, '_sock', stream)
+            sock.sendall((command + '\\n').encode('utf-8'))
+        finally:
+            stream.close()
+        return {'accepted':True,'command':command}
+    if action == 'console_logs':
+        raw = container.logs(stdout=True, stderr=True, tail=120, since=max(0,int(time.time())-45), timestamps=True)
+        return {'output':raw.decode('utf-8', errors='replace')[-48000:]}
+    raise ValueError('Unsupported console operation')
 
 def run_task(client, task):
     action = task.get('action')
@@ -100,6 +184,10 @@ def run_task(client, task):
         raise RuntimeError('Managed server container does not exist')
     if container.labels.get(LABEL_OWNER) != 'true' or container.labels.get('net.lightingpanel.server-id') != str(server_id):
         raise RuntimeError('Refusing to operate on a container not owned by Lighting Panel')
+    if action in ('console','console_logs'):
+        return {'data':run_console_operation(container, action, payload)}
+    if action.startswith('file_'):
+        return {'data':run_file_operation(container, payload)}
     if action == 'start':
         if container.status != 'running':
             container.start()
