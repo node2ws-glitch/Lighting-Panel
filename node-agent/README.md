@@ -41,3 +41,10 @@ Open the assigned TCP allocation range (currently 25565–25999) in the VPS fire
 - The current agent runs as root to read host-wide metrics and access the Docker socket.
 - Docker container resource limits are enforced by the daemon. Host firewall, disk quotas, image update policy, console streaming, and container health reconciliation are still required before multi-tenant production use.
 - Task claims have a two-minute lease so interrupted work can be retried after the lease expires.
+
+## Console and file tasks
+
+The agent also supports `console`, `console_logs`, and `file_list`, `file_read`, `file_write`, `file_mkdir`, `file_delete`, and `file_rename` tasks. Minecraft commands are written to the container's attached stdin; no shell is involved. File operations are restricted to the server's `/data` volume after path resolution. Symlinks are omitted, only regular files can be deleted, and editor reads/writes are capped at 512 KiB. The panel's browser file manager supports small uploads and downloads.
+
+Console output is polled through the task API and is not a persistent WebSocket stream. SFTP is not enabled yet. Update the agent files and restart `lighting-node-agent` on every node before using these features.
+
