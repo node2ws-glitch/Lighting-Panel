@@ -16,8 +16,8 @@ from app.models import BillingInvoice, BillingSubscription, ProcessedBillingWebh
 
 router = APIRouter(prefix='/billing', tags=['billing'])
 
-def _stripe_ready(settings):
-    if not settings.stripe_secret_key or not settings.stripe_price_id:
+def _stripe_ready(settings, require_price=True):
+    if not settings.stripe_secret_key or (require_price and not settings.stripe_price_id):
         raise HTTPException(status_code=503, detail='Billing is not configured by the panel administrator')
     return settings
 
@@ -57,7 +57,7 @@ def create_checkout(request: Request, user: User = Depends(get_current_user), db
 
 @router.post('/portal')
 def create_portal(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    settings=_stripe_ready(get_settings())
+    settings=_stripe_ready(get_settings(), require_price=False)
     subscription=db.scalar(select(BillingSubscription).where(BillingSubscription.user_id==user.id))
     if not subscription or not subscription.stripe_customer_id:
         raise HTTPException(status_code=404,detail='No payment customer is linked to this account yet')
@@ -126,7 +126,7 @@ async def stripe_webhook(request: Request, stripe_signature: str | None = Header
         return {'received':True,'duplicate':True}
     user_id=None
     if event_type=='checkout.session.completed':
-        raw_id=(obj.get('client_reference_id') or obj.get('metadata',{}).get('user_id'))
+        raw_id=(obj.get('client_reference_id') or (obj.get('metadata') or {}).get('user_id'))
         try:
             user_id=int(raw_id)
         except (ValueError,TypeError):
@@ -142,7 +142,7 @@ async def stripe_webhook(request: Request, stripe_signature: str | None = Header
     elif event_type.startswith('customer.subscription.'):
         customer_id=obj.get('customer')
         stripe_sub_id=obj.get('id')
-        raw_user_id=obj.get('metadata',{}).get('user_id')
+        raw_user_id=(obj.get('metadata') or {}).get('user_id')
         try:
             metadata_user_id=int(raw_user_id) if raw_user_id else None
         except (ValueError,TypeError):
@@ -161,7 +161,7 @@ async def stripe_webhook(request: Request, stripe_signature: str | None = Header
             subscription.cancel_at_period_end=bool(obj.get('cancel_at_period_end',False))
             period_end=obj.get('current_period_end')
             subscription.current_period_end=datetime.fromtimestamp(period_end,timezone.utc) if period_end else None
-            price_items=obj.get('items',{}).get('data',[])
+            price_items=(obj.get('items') or {}).get('data',[])
             if price_items:
                 subscription.stripe_price_id=price_items[0].get('price',{}).get('id',subscription.stripe_price_id)
     elif event_type in ('invoice.paid','invoice.payment_failed'):
