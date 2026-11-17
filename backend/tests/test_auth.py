@@ -181,3 +181,45 @@ def test_backups_and_version_upgrade_are_queued_and_validated():
     assert client.post(f'/api/v1/admin/servers/{sid}/backups', headers=admin, json={'action':'restore'}).status_code == 422
     queued = client.get('/api/v1/nodes/tasks', headers=node_headers).json()
     assert {task['action'] for task in queued} >= {'backup_create','version_upgrade'}
+
+
+def test_server_subusers_have_only_granted_permissions_and_can_be_revoked():
+    from app.models import Node, GameServer
+    with TestingSession() as db:
+        member = User(email='staff@example.com', username='staff', password_hash=hash_password('Staff-Password-123!'), role='user')
+        db.add(member)
+        db.commit()
+    login = client.post('/api/v1/auth/login', json={'email':'admin@example.com','password':'Correct-Horse-123!'}).json()
+    admin = {'Authorization':f"Bearer {login['access_token']}"}
+    enrolled = client.post('/api/v1/admin/nodes', headers=admin, json={'name':'subuser-node','fqdn':'subuser.example.test'}).json()
+    node_headers = {'X-Node-Token':enrolled['token']}
+    client.post('/api/v1/nodes/heartbeat', headers=node_headers, json={
+        'cpu_percent':1,'memory_total':8*1024**3,'memory_used':1024**3,'disk_total':80*1024**3,'disk_used':5*1024**3
+    })
+    created = client.post('/api/v1/admin/servers', headers=admin, json={
+        'name':'Team SMP','node_id':enrolled['node']['id'],'memory_mb':1024,'cpu_limit':1
+    }).json()
+    provision = client.get('/api/v1/nodes/tasks', headers=node_headers).json()[0]
+    client.post(f"/api/v1/nodes/tasks/{provision['id']}/result", headers=node_headers, json={'docker_id':'docker-team'})
+    sid = created['id']
+    grant = client.post(f'/api/v1/admin/servers/{sid}/members', headers=admin, json={
+        'email':'staff@example.com','permissions':['server.read','control.console','file.read']
+    })
+    assert grant.status_code == 201
+    assert grant.json()['permissions'] == ['control.console','file.read','server.read']
+    staff_login = client.post('/api/v1/auth/login', json={'email':'staff@example.com','password':'Staff-Password-123!'}).json()
+    staff = {'Authorization':f"Bearer {staff_login['access_token']}"}
+    visible = client.get('/api/v1/admin/servers', headers=staff)
+    assert visible.status_code == 200 and [row['id'] for row in visible.json()] == [sid]
+    access = client.get(f'/api/v1/admin/servers/{sid}/access', headers=staff)
+    assert access.status_code == 200 and 'control.console' in access.json()['permissions']
+    assert client.post(f'/api/v1/admin/servers/{sid}/console', headers=staff, json={'command':'say hello'}).status_code == 202
+    assert client.post(f'/api/v1/admin/servers/{sid}/files', headers=staff, json={'operation':'list','path':'.'}).status_code == 202
+    assert client.post(f'/api/v1/admin/servers/{sid}/files', headers=staff, json={'operation':'write','path':'server.properties','content_base64':'eA=='}).status_code == 403
+    assert client.post(f'/api/v1/admin/servers/{sid}/backups', headers=staff, json={'action':'create'}).status_code == 403
+    assert client.get(f'/api/v1/admin/servers/{sid}/members', headers=staff).status_code == 403
+    member_id = grant.json()['id']
+    revoked = client.delete(f'/api/v1/admin/servers/{sid}/members/{member_id}', headers=admin)
+    assert revoked.status_code == 204
+    assert client.get('/api/v1/admin/servers', headers=staff).json() == []
+    assert client.get(f'/api/v1/admin/servers/{sid}/access', headers=staff).status_code == 403
