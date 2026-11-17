@@ -223,3 +223,22 @@ def test_server_subusers_have_only_granted_permissions_and_can_be_revoked():
     assert revoked.status_code == 204
     assert client.get('/api/v1/admin/servers', headers=staff).json() == []
     assert client.get(f'/api/v1/admin/servers/{sid}/access', headers=staff).status_code == 403
+
+def test_admin_can_assign_server_to_customer_owner():
+    with TestingSession() as db:
+        db.add(User(email='owner@example.com', username='owner', password_hash=hash_password('Owner-Password-123!'), role='user'))
+        db.commit()
+    login = client.post('/api/v1/auth/login', json={'email':'admin@example.com','password':'Correct-Horse-123!'}).json()
+    admin = {'Authorization': 'Bearer ' + login['access_token']}
+    enrolled = client.post('/api/v1/admin/nodes', headers=admin, json={'name':'customer-owner-node','fqdn':'owner.example.test'}).json()
+    node_headers = {'X-Node-Token':enrolled['token']}
+    client.post('/api/v1/nodes/heartbeat', headers=node_headers, json={'cpu_percent':1,'memory_total':8*1024**3,'memory_used':1024**3,'disk_total':80*1024**3,'disk_used':5*1024**3})
+    created = client.post('/api/v1/admin/servers', headers=admin, json={'name':'Customer World','node_id':enrolled['node']['id'],'owner_email':'owner@example.com','memory_mb':1024,'cpu_limit':1})
+    assert created.status_code == 202
+    assert created.json()['owner_id'] is not None
+    owner_login = client.post('/api/v1/auth/login', json={'email':'owner@example.com','password':'Owner-Password-123!'}).json()
+    owner_headers = {'Authorization':'Bearer ' + owner_login['access_token']}
+    visible = client.get('/api/v1/admin/servers', headers=owner_headers)
+    assert visible.status_code == 200 and visible.json()[0]['id'] == created.json()['id']
+    assert client.get('/api/v1/admin/servers/' + str(created.json()['id']) + '/access', headers=owner_headers).json()['is_owner'] is True
+    assert client.post('/api/v1/admin/servers', headers=owner_headers, json={'name':'Forbidden','node_id':enrolled['node']['id']}).status_code == 403
