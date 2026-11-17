@@ -80,3 +80,37 @@ class ServerSubuser(Base):
     permissions: Mapped[str] = mapped_column(Text, default='[]', nullable=False)
     created_by: Mapped[int | None] = mapped_column(ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class BillingSubscription(Base):
+    __tablename__ = 'billing_subscriptions'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), unique=True, nullable=False, index=True)
+    stripe_customer_id: Mapped[str | None] = mapped_column(String(128), unique=True, nullable=True)
+    stripe_subscription_id: Mapped[str | None] = mapped_column(String(128), unique=True, nullable=True)
+    stripe_price_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default='incomplete', nullable=False)
+    current_period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class BillingInvoice(Base):
+    __tablename__ = 'billing_invoices'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    stripe_invoice_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    amount_due: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    amount_paid: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    currency: Mapped[str] = mapped_column(String(8), default='usd', nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    hosted_invoice_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class ProcessedBillingWebhook(Base):
+    __tablename__ = 'processed_billing_webhooks'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stripe_event_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
