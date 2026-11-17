@@ -142,7 +142,7 @@ def authenticate_node(x_node_token: str | None, db: Session) -> Node:
 def list_servers(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     query = select(GameServer).order_by(GameServer.created_at.desc()).limit(500)
     if actor.role != 'admin':
-        query = select(GameServer).outerjoin(ServerSubuser, ServerSubuser.server_id == GameServer.id).where(or_(GameServer.owner_id == actor.id, ServerSubuser.user_id == actor.id)).order_by(GameServer.created_at.desc()).limit(500)
+        query = select(GameServer).outerjoin(ServerSubuser, ServerSubuser.server_id == GameServer.id).where(or_(GameServer.owner_id == actor.id, (ServerSubuser.user_id == actor.id) & ServerSubuser.permissions.contains('"server.read"'))).order_by(GameServer.created_at.desc()).limit(500)
     return list(db.scalars(query).unique().all())
 
 @router.post('/admin/servers', response_model=ServerRead, status_code=status.HTTP_202_ACCEPTED)
@@ -425,7 +425,7 @@ def add_server_member(server_id: int, payload: ServerMemberCreate, actor: User =
         raise HTTPException(status_code=400, detail='Administrator accounts already have full panel access')
     if db.scalar(select(ServerSubuser).where(ServerSubuser.server_id == server_id, ServerSubuser.user_id == member.id)):
         raise HTTPException(status_code=409, detail='This account already has access to the server')
-    permissions = sorted(set(payload.permissions))
+    permissions = sorted(set(payload.permissions) | {'server.read'})
     membership = ServerSubuser(server_id=server_id, user_id=member.id, permissions=json.dumps(permissions), created_by=actor.id)
     db.add(membership)
     record_event(db, 'server.member.add', actor, 'Granted server ' + str(server_id) + ' access to user ' + str(member.id) + ': ' + ','.join(permissions))
