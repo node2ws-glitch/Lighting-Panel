@@ -7,7 +7,8 @@ echo
 if [[ "$PANEL_URL" != https://* && "$PANEL_URL" != http://127.0.0.1* ]]; then echo "The panel URL must use HTTPS."; exit 1; fi
 if [[ ${#NODE_TOKEN} -lt 32 ]]; then echo "Invalid node token."; exit 1; fi
 apt-get update
-apt-get install -y python3 python3-venv
+apt-get install -y python3 python3-venv docker.io
+systemctl enable --now docker
 install -d -m 0750 /opt/lighting-node-agent /etc/lighting-agent
 cp agent.py requirements.txt /opt/lighting-node-agent/
 python3 -m venv /opt/lighting-node-agent/.venv
