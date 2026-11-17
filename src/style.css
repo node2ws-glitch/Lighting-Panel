@@ -42,3 +42,33 @@
 .members-manager .backup-meta small{line-height:1.6;white-space:normal}
 @media(max-width:760px){.members-manager{grid-template-columns:1fr}}
 @media(max-width:420px){.permission-grid{grid-template-columns:1fr}}
+
+/* Phase 10 — billing and production operations */
+.billing-page{display:grid;gap:14px}
+.billing-plan{padding:22px;display:grid;grid-template-columns:auto 1fr auto;gap:15px;align-items:start}
+.billing-plan-icon{width:48px;height:48px;border-radius:13px;background:#8b70ff20;color:#a997ff;display:grid;place-items:center}
+.billing-plan-copy h2{font-size:19px;margin:7px 0}
+.billing-plan-copy p{font-size:11px;color:#8d98ae;line-height:1.7;max-width:620px;margin:0}
+.billing-status{font-size:9px;text-transform:uppercase;letter-spacing:1px;border:1px solid #41465a;border-radius:20px;padding:7px 10px;color:#aeb8cb}
+.billing-status.active{border-color:#287e68;color:#70dfbd;background:#1c6c521c}
+.billing-plan-actions{grid-column:2/4;display:flex;gap:9px;flex-wrap:wrap}
+.billing-plan-actions button{display:flex;align-items:center;gap:8px}
+.billing-renewal{grid-column:2/4;color:#8792a8;font-size:10px}
+.billing-invoices{padding:18px}
+.billing-invoice{display:flex;align-items:center;gap:12px;padding:13px 0;border-top:1px solid #272c3e}
+.billing-invoice-icon{width:34px;height:34px;display:grid;place-items:center;border-radius:9px;background:#8b70ff18;color:#a997ff}
+.billing-invoice-info{display:grid;gap:4px;flex:1;min-width:0}
+.billing-invoice-info b{font-size:11px;color:#e3e7f2}
+.billing-invoice-info small{font-size:9px;color:#8994a9}
+.billing-invoice strong{font-size:11px}
+.billing-invoice a{font-size:10px;color:#a997ff;text-decoration:none;display:flex;align-items:center;gap:4px}
+.billing-note{display:flex;align-items:center;gap:9px;color:#8d98ae;font-size:10px;line-height:1.6;padding:4px 2px}
+.billing-note svg{color:#8e7bff;flex:none}
+.ops-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.ops-status{grid-column:1/-1;padding:18px}
+.ops-endpoints{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;padding:12px 0}
+.ops-endpoints span{display:grid;gap:8px;font-size:10px;color:#aeb8cb;padding:13px;background:#0d1220;border:1px solid #282e42;border-radius:9px}
+.ops-endpoints i{width:7px;height:7px;border-radius:50%;background:#54d5aa;box-shadow:0 0 10px #54d5aa}
+.ops-endpoints code{font-size:9px;color:#9b8aff}
+@media(max-width:800px){.ops-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.ops-endpoints{grid-template-columns:1fr}}
+@media(max-width:520px){.billing-plan{grid-template-columns:auto 1fr}.billing-status{grid-column:1/-1;justify-self:start}.billing-plan-actions,.billing-renewal{grid-column:1/-1}.billing-invoice{flex-wrap:wrap}.billing-invoice strong{margin-left:46px}.billing-invoice a{margin-left:auto}.ops-grid{grid-template-columns:1fr}}
