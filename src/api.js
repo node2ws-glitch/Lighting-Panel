@@ -44,3 +44,6 @@ export const listServerTasks = (id) => request('/admin/servers/' + id + '/tasks'
 export const getServerTask = (serverId, taskId) => request('/admin/servers/' + serverId + '/tasks/' + taskId);
 
 export const minecraftAction = (id, payload) => request('/admin/servers/' + id + '/minecraft/action', { method: 'POST', body: JSON.stringify(payload) });
+
+export const manageServerBackups = (id, payload) => request('/admin/servers/' + id + '/backups', { method: 'POST', body: JSON.stringify(payload) });
+export const upgradeServerVersion = (id, version) => request('/admin/servers/' + id + '/version', { method: 'POST', body: JSON.stringify({version}) });
