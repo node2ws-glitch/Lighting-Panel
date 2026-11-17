@@ -142,9 +142,17 @@ async def stripe_webhook(request: Request, stripe_signature: str | None = Header
     elif event_type.startswith('customer.subscription.'):
         customer_id=obj.get('customer')
         stripe_sub_id=obj.get('id')
+        raw_user_id=obj.get('metadata',{}).get('user_id')
+        try:
+            metadata_user_id=int(raw_user_id) if raw_user_id else None
+        except (ValueError,TypeError):
+            metadata_user_id=None
         subscription=db.scalar(select(BillingSubscription).where(
             (BillingSubscription.stripe_subscription_id==stripe_sub_id) |
             (BillingSubscription.stripe_customer_id==customer_id)))
+        if subscription is None and metadata_user_id and db.get(User,metadata_user_id):
+            subscription=BillingSubscription(user_id=metadata_user_id,stripe_price_id=settings.stripe_price_id or 'unknown')
+            db.add(subscription)
         if subscription:
             user_id=subscription.user_id
             subscription.stripe_customer_id=customer_id
@@ -168,7 +176,7 @@ async def stripe_webhook(request: Request, stripe_signature: str | None = Header
             invoice.amount_due=int(obj.get('amount_due') or 0)
             invoice.amount_paid=int(obj.get('amount_paid') or 0)
             invoice.currency=(obj.get('currency') or 'usd')[:8]
-            invoice.status=obj.get('status') or ('paid' if event_type=='invoice.paid' else 'payment_failed')
+            invoice.status='paid' if event_type=='invoice.paid' else 'payment_failed'
             invoice.hosted_invoice_url=obj.get('hosted_invoice_url')
     db.add(ProcessedBillingWebhook(stripe_event_id=event_id,event_type=event_type))
     if user_id:
