@@ -119,3 +119,24 @@ The project should only mark a phase complete after its tests and end-to-end acc
 - Owners can list and revoke team memberships. Grants are stored in a dedicated `server_subusers` table with a unique server/user pair and foreign-key cleanup.
 - Apply the new database migration with `cd backend && alembic upgrade head` before starting the updated API.
 - The phase does not include email invitations, customer billing, quotas, or customer self-service provisioning.
+
+## Phase 10 — billing, observability and production controls
+
+### Stripe billing
+- Customers can start a recurring Stripe Checkout session for the administrator-configured Stripe Price ID, open the Stripe Billing Portal, and view invoice history.
+- The API never receives or stores card numbers. Configure `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`, and `FRONTEND_URL` in the backend environment.
+- Register `POST https://YOUR_API_HOST/api/v1/billing/webhook` in Stripe. Subscribe to `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, and `invoice.payment_failed`.
+- Webhook signatures use Stripe's timestamped HMAC scheme with a five-minute tolerance. Processed event IDs are stored for retry idempotency. Subscription and invoice records are scoped to the authenticated account.
+- Billing is an integration foundation: no server quotas, automatic suspension for failed payments, tax calculation, coupons, or metered usage enforcement are enabled yet. Configure products/prices and webhook delivery in Stripe before enabling customer payments.
+
+### Operations and security
+- `GET /api/v1/health/live` is a liveness probe; `GET /api/v1/health/ready` checks database connectivity.
+- Authenticated administrators can view live server/node/task/account counters at `GET /api/v1/admin/metrics`.
+- API requests receive request IDs and security headers. Login requests have a stricter per-IP rate limit; all other routes have a configurable per-IP limit through `RATE_LIMIT_PER_MINUTE`.
+- The limiter is in-process. It is useful for a single API instance, but is not a distributed limit across multiple workers/replicas. Use a shared Redis-backed gateway limiter for horizontally scaled production deployments.
+- In `ENVIRONMENT=production`, interactive API documentation is disabled, localhost CORS origins are rejected, and `ALLOWED_HOSTS` must explicitly list the public panel/API hostnames.
+- Put the API behind HTTPS, configure a reverse proxy with a strict body-size limit, restrict database/network access, keep Stripe and node secrets out of source control, and back up PostgreSQL plus node-local game backups independently.
+- Run the database migration before deploying the API: `cd backend && alembic upgrade head`.
+
+### Phase 10 deployment settings
+Set `ENVIRONMENT=production`, a unique `SECRET_KEY`, exact `CORS_ORIGINS`, and comma-separated `ALLOWED_HOSTS`. Set `FRONTEND_URL` to the HTTPS panel origin. Billing remains unavailable until all three Stripe settings are configured.
