@@ -442,3 +442,15 @@ def remove_server_member(server_id: int, membership_id: int, actor: User = Depen
     db.delete(membership)
     record_event(db, 'server.member.remove', actor, 'Revoked membership ' + str(membership_id) + ' from server ' + str(server_id))
     db.commit()
+
+@router.get('/admin/servers/{server_id}/access')
+def get_server_access(server_id: int, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    server = db.get(GameServer, server_id)
+    if server is None:
+        raise HTTPException(status_code=404, detail='Server not found')
+    if actor.role == 'admin' or server.owner_id == actor.id:
+        return {'is_owner':True,'permissions':['server.read','control.console','control.start','control.stop','control.restart','file.read','file.write','backup.read','backup.create','backup.restore','server.manage']}
+    membership = db.scalar(select(ServerSubuser).where(ServerSubuser.server_id == server_id, ServerSubuser.user_id == actor.id))
+    if membership is None:
+        raise HTTPException(status_code=403, detail='You do not have access to this server')
+    return {'is_owner':False,'permissions':json.loads(membership.permissions)}
