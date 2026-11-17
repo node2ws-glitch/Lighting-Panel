@@ -126,3 +126,22 @@ class ServerMemberRead(BaseModel):
     email: EmailStr
     permissions: list[ServerPermission]
     created_at: datetime
+
+
+class BillingCheckoutRead(BaseModel):
+    checkout_url: str
+
+class BillingInvoiceRead(BaseModel):
+    id: int
+    amount_due: int
+    amount_paid: int
+    currency: str
+    status: str
+    hosted_invoice_url: str | None
+    created_at: datetime
+
+class BillingSubscriptionRead(BaseModel):
+    status: str
+    current_period_end: datetime | None
+    cancel_at_period_end: bool
+    invoices: list[BillingInvoiceRead]
