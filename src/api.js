@@ -42,3 +42,5 @@ export const operateServerFiles = (id, payload) => request('/admin/servers/' + i
 export const listServerTasks = (id) => request('/admin/servers/' + id + '/tasks');
 
 export const getServerTask = (serverId, taskId) => request('/admin/servers/' + serverId + '/tasks/' + taskId);
+
+export const minecraftAction = (id, payload) => request('/admin/servers/' + id + '/minecraft/action', { method: 'POST', body: JSON.stringify(payload) });
