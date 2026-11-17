@@ -109,7 +109,67 @@ function RealServersPage({announce}){
   </div><p className="muted">Creates a persistent Docker container with a dedicated TCP allocation. The node must be online and have enough free RAM.</p><button className="button-primary" disabled={saving||nodes.filter(n=>n.is_enabled&&online(n)).length===0}>{saving?'Queueing deployment…':'Deploy Minecraft server'}</button></form>}
   <div className="toolbar"><div className="search-box"><Search size={16}/><input placeholder="Search your servers…" value={query} onChange={e=>setQuery(e.target.value)}/></div><span className="muted">{servers.length} deployed</span></div>
   {loading?<p className="muted">Loading server inventory from API…</p>:<div className="table-wrap"><table><thead><tr><th>SERVER</th><th>NODE</th><th>STATUS</th><th>RESOURCES</th><th>ALLOCATION</th><th>CONTROLS</th></tr></thead><tbody>{filtered.map(server=>{const node=nodeById(server.node_id);const busy=['installing','starting','stopping','deleting'].includes(server.status);return <tr key={server.id}><td><div className="table-server"><span className="server-icon violet"><Gamepad2 size={17}/></span><span><b>{server.name}</b><small>Minecraft Java · {server.version}</small></span></div></td><td>{node?.name||'Unknown node'}<small className="user-email">{node?.fqdn||'—'}</small></td><td><span className={'server-status '+(server.status==='online'?'online':['installing','starting','stopping','deleting'].includes(server.status)?'installing':'offline')}><i/>{statusLabel(server.status)}</span>{server.last_error&&<small className="server-error">{server.last_error}</small>}</td><td>{server.memory_mb} MB RAM · {server.cpu_limit} vCPU</td><td><code>{node?.fqdn||'node'}:{server.allocation_port}</code></td><td><div className="server-controls"><button className="small-action" onClick={()=>setSelectedServer(server)}>Manage</button><button className="small-action" disabled={busy||server.status==='error'} onClick={()=>action(server,server.status==='online'?'stop':'start')}>{server.status==='online'?'Stop':'Start'}</button><button className="small-action ghost" disabled={busy||server.status==='error'} onClick={()=>action(server,'restart')}>Restart</button><button className="small-action danger" disabled={busy} onClick={()=>action(server,'delete')}>Delete</button></div></td></tr>})}</tbody></table>{filtered.length===0&&<div className="empty">{servers.length?'No servers match your search.':'No servers deployed yet. Enroll an online VPS node, then deploy your first Minecraft server.'}</div>}</div>}
+  {selectedServer&&<ServerWorkspace server={selectedServer} onClose={()=>setSelectedServer(null)} announce={announce}/>}
  </div>;
+}
+
+
+function ServerWorkspace({server,onClose,announce}){
+ const [tab,setTab]=useState('console'),[tasks,setTasks]=useState([]),[logs,setLogs]=useState('Waiting for node console output…'),[command,setCommand]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('');
+ const [path,setPath]=useState('.'),[entries,setEntries]=useState([]),[filePath,setFilePath]=useState(''),[fileText,setFileText]=useState('');
+ async function refreshTasks(){
+  const rows=await listServerTasks(server.id);setTasks(rows);
+  const latest=rows.filter(t=>t.action==='console_logs'&&t.status==='completed').at(-1);
+  if(latest?.result?.data?.output)setLogs(latest.result.data.output);
+ }
+ useEffect(()=>{
+  let alive=true;
+  const tick=async()=>{try{if(tab==='console')await requestConsoleLogs(server.id);const rows=await listServerTasks(server.id);if(!alive)return;setTasks(rows);const latest=rows.filter(t=>t.action==='console_logs'&&t.status==='completed').at(-1);if(latest?.result?.data?.output)setLogs(latest.result.data.output);}catch(e){if(alive)setError(e.message);}};
+  tick();const timer=setInterval(tick,3000);return()=>{alive=false;clearInterval(timer);};
+ },[server.id,tab]);
+ async function waitTask(taskId){
+  for(let i=0;i<30;i++){await new Promise(resolve=>setTimeout(resolve,700));const rows=await listServerTasks(server.id);setTasks(rows);const task=rows.find(t=>t.id===taskId);if(task&&(task.status==='completed'||task.status==='failed')){if(task.status==='failed'||task.result?.error)throw new Error(task.result?.error||'Node operation failed');return task.result?.data||{};}}
+  throw new Error('Node did not respond in time. Check the node agent service.');
+ }
+ async function sendCommand(e){
+  e.preventDefault();if(!command.trim())return;setBusy(true);setError('');
+  try{await sendConsoleCommand(server.id,command.trim());setCommand('');await refreshTasks();announce('Console command queued');}
+  catch(e){setError(e.message);}finally{setBusy(false);}
+ }
+ async function fileOperation(operation,extra={}){
+  setBusy(true);setError('');
+  try{
+   const queued=await operateServerFiles(server.id,{operation,path,...extra});
+   const data=await waitTask(queued.task_id);
+   if(operation==='list'){setEntries(data.entries||[]);setPath(data.path||path);setFilePath('');}
+   if(operation==='read'){const raw=atob(data.content_base64||'');const bytes=Uint8Array.from(raw,c=>c.charCodeAt(0));setFilePath(data.path);setFileText(new TextDecoder().decode(bytes));}
+   if(operation==='write')announce('File saved on VPS');
+   if(['delete','rename','mkdir'].includes(operation)){const target=extra.parent||path;const q=await operateServerFiles(server.id,{operation:'list',path:target});const listing=await waitTask(q.task_id);setEntries(listing.entries||[]);setPath(listing.path||target);setFilePath('');}
+  }catch(e){setError(e.message);}finally{setBusy(false);}
+ }
+ function encodeBase64(value){
+  const bytes=new TextEncoder().encode(value);let binary='';
+  for(let i=0;i<bytes.length;i+=0x8000)binary+=String.fromCharCode(...bytes.subarray(i,i+0x8000));
+  return btoa(binary);
+ }
+ useEffect(()=>{if(tab==='files')fileOperation('list');},[tab,server.id]);
+ const parent=path==='.'?'.':(path.includes('/')?path.split('/').slice(0,-1).join('/')||'.':'.');
+ return <section className="server-workspace">
+  <div className="workspace-head"><div><div className="eyebrow">SERVER CONTROL · #{server.id}</div><h2>{server.name}</h2><p>Minecraft Java · {server.version} · {server.status}</p></div><button className="button-secondary" onClick={onClose}><X size={15}/> Close</button></div>
+  <div className="workspace-tabs"><button className={tab==='console'?'active':''} onClick={()=>setTab('console')}><Terminal size={15}/> Console</button><button className={tab==='files'?'active':''} onClick={()=>setTab('files')}><Folder size={15}/> File manager</button></div>
+  {error&&<div className="auth-error">{error}</div>}
+  {tab==='console'?<div className="console-layout">
+   <div className="console-screen"><div className="console-top"><span><i/> LIVE NODE OUTPUT</span><button onClick={()=>requestConsoleLogs(server.id).catch(e=>setError(e.message))}><RefreshCw size={13}/> Refresh</button></div><pre>{logs}</pre></div>
+   <form className="console-command" onSubmit={sendCommand}><span className="console-prompt">/</span><input value={command} onChange={e=>setCommand(e.target.value)} placeholder="Enter a Minecraft command (e.g. list, say Hello)" maxLength={512}/><button className="button-primary" disabled={busy||!command.trim()}><Send size={14}/> Send</button></form>
+   <div className="task-history"><b>Recent console actions</b>{tasks.filter(t=>t.action==='console').slice(-5).reverse().map(t=><div key={t.id}><code>{t.id}</code><span>{t.status==='completed'?'Command delivered':t.status==='failed'?'Failed':'Queued'}</span><small>{new Date(t.created_at).toLocaleTimeString()}</small></div>)}</div>
+  </div>:<div className="file-manager">
+   <div className="file-toolbar"><div className="file-breadcrumb"><button onClick={()=>fileOperation('list',{path:'.'})}>/data</button>{path!=='.'&&<><ChevronRight size={13}/><span>{path}</span></>}</div><div><button className="small-action ghost" onClick={()=>fileOperation('list')}><RefreshCw size={13}/> Refresh</button><button className="small-action" onClick={()=>{const name=window.prompt('New file name');if(name)fileOperation('write',{path:path==='.'?name:path+'/'+name,content_base64:''});}}><FilePlus size={13}/> New file</button><button className="small-action" onClick={()=>{const name=window.prompt('New folder name');if(name)fileOperation('mkdir',{path:path==='.'?name:path+'/'+name});}}><FolderPlus size={13}/> Folder</button></div></div>
+   <div className="file-columns"><div className="file-list">{path!=='.'&&<button className="file-row" onClick={()=>fileOperation('list',{path:parent})}><ArrowLeft size={14}/> ..</button>}{entries.map(entry=><button className="file-row" key={entry.path} onClick={()=>entry.directory?fileOperation('list',{path:entry.path}):fileOperation('read',{path:entry.path})}>{entry.directory?<Folder size={15}/>:<FileCode size={15}/>}<span>{entry.name}</span><small>{entry.directory?'Folder':(entry.size/1024).toFixed(1)+' KB'}</small></button>)}</div>
+    <div className="file-editor">{filePath?<><div className="editor-head"><b>{filePath}</b><div><button className="small-action" disabled={busy} onClick={()=>fileOperation('write',{path:filePath,content_base64:encodeBase64(fileText)})}><Save size={13}/> Save</button><button className="small-action danger" disabled={busy} onClick={()=>{if(window.confirm('Delete '+filePath+'?'))fileOperation('delete',{path:filePath});}}><Trash2 size={13}/> Delete</button></div></div><textarea spellCheck="false" value={fileText} onChange={e=>setFileText(e.target.value)}/></>:<div className="file-empty"><Folder size={28}/><b>Select a file to edit</b><span>Files up to 512 KB can be edited here. Use SFTP for larger files.</span></div>}</div>
+   </div>
+  </div>}
+  {busy&&<div className="workspace-busy"><LoaderCircle size={14}/> Waiting for node agent…</div>}
+ </section>;
 }
 
 function UsersPage({announce}){
