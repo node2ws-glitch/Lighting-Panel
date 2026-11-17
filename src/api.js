@@ -35,3 +35,8 @@ export const setNodeStatus = (id, enabled) => request('/admin/nodes/' + id + '/s
 export const listServers = () => request('/admin/servers');
 export const createGameServer = (payload) => request('/admin/servers', { method: 'POST', body: JSON.stringify(payload) });
 export const controlServer = (id, action) => request('/admin/servers/' + id + '/action', { method: 'POST', body: JSON.stringify({action}) });
+
+export const sendConsoleCommand = (id, command) => request('/admin/servers/' + id + '/console', { method: 'POST', body: JSON.stringify({command}) });
+export const requestConsoleLogs = (id) => request('/admin/servers/' + id + '/console/logs', { method: 'POST' });
+export const operateServerFiles = (id, payload) => request('/admin/servers/' + id + '/files', { method: 'POST', body: JSON.stringify(payload) });
+export const listServerTasks = (id) => request('/admin/servers/' + id + '/tasks');
