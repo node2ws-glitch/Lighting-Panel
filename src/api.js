@@ -27,3 +27,7 @@ export const createUser = (payload) => request('/admin/users', { method: 'POST',
 export const setUserStatus = (id, active) => request('/admin/users/' + id + '/status?is_active=' + active, { method: 'PATCH' });
 export const listAudit = () => request('/admin/audit');
 export const apiHealth = () => request('/health');
+
+export const listNodes = () => request('/admin/nodes');
+export const createNode = (payload) => request('/admin/nodes', { method: 'POST', body: JSON.stringify(payload) });
+export const setNodeStatus = (id, enabled) => request('/admin/nodes/' + id + '/status?is_enabled=' + enabled, { method: 'PATCH' });
