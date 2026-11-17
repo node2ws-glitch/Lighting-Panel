@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import Login from './Login.jsx';
-import { currentUser, clearToken, logout, listUsers, createUser, setUserStatus, listAudit, listNodes, createNode, setNodeStatus, listServers, createGameServer, controlServer, sendConsoleCommand, requestConsoleLogs, operateServerFiles, listServerTasks } from './api.js';
+import { currentUser, clearToken, logout, listUsers, createUser, setUserStatus, listAudit, listNodes, createNode, setNodeStatus, listServers, createGameServer, controlServer, sendConsoleCommand, requestConsoleLogs, operateServerFiles, listServerTasks, getServerTask } from './api.js';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Activity, ArrowDownToLine, ArrowUpRight, Bell, Box, ChartNoAxesCombined, ChevronDown, CircleHelp, Command, Cpu, Database, FileText, Gamepad2, Gauge, HardDrive, LayoutDashboard, LifeBuoy, LogOut, Menu, MoreHorizontal, Network, Plus, Search, Server, Settings, ShieldCheck, Terminal, Users, Wallet, Wifi, X, Zap, Folder, FolderPlus, FilePlus, ChevronRight, RefreshCw, Save, Trash2, ArrowLeft, Send, LoaderCircle, FileCode } from 'lucide-react';
 
@@ -128,7 +128,7 @@ function ServerWorkspace({server,onClose,announce}){
   tick();const timer=setInterval(tick,3000);return()=>{alive=false;clearInterval(timer);};
  },[server.id,tab]);
  async function waitTask(taskId){
-  for(let i=0;i<30;i++){await new Promise(resolve=>setTimeout(resolve,700));const rows=await listServerTasks(server.id);setTasks(rows);const task=rows.find(t=>t.id===taskId);if(task&&(task.status==='completed'||task.status==='failed')){if(task.status==='failed'||task.result?.error)throw new Error(task.result?.error||'Node operation failed');return task.result?.data||{};}}
+  for(let i=0;i<30;i++){await new Promise(resolve=>setTimeout(resolve,700));const rows=await listServerTasks(server.id);setTasks(rows);const task=rows.find(t=>t.id===taskId);if(task&&(task.status==='completed'||task.status==='failed')){const detail=await getServerTask(server.id,taskId);if(task.status==='failed'||detail.result?.error)throw new Error(detail.result?.error||'Node operation failed');return detail.result?.data||{};}}
   throw new Error('Node did not respond in time. Check the node agent service.');
  }
  async function sendCommand(e){
