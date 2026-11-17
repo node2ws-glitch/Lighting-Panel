@@ -80,3 +80,14 @@ class ServerAction(BaseModel):
 class NodeTaskResult(BaseModel):
     docker_id: str | None = Field(default=None, max_length=128)
     error: str | None = Field(default=None, max_length=1000)
+    data: dict | None = None
+
+class ConsoleCommand(BaseModel):
+    command: str = Field(min_length=1, max_length=512)
+
+class ServerFileRequest(BaseModel):
+    operation: str = Field(pattern=r'^(list|read|write|mkdir|delete|rename)
+)
+    path: str = Field(default='.', min_length=1, max_length=512)
+    destination: str | None = Field(default=None, max_length=512)
+    content_base64: str | None = Field(default=None, max_length=1400000)
