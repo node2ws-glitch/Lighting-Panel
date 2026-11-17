@@ -5,6 +5,10 @@ import os
 import socket
 import sys
 import time
+import tarfile
+import shutil
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import docker
@@ -126,6 +130,143 @@ def run_console_operation(container, action, payload):
         return {'output':raw.decode('utf-8', errors='replace')[-48000:]}
     raise ValueError('Unsupported console operation')
 
+
+BACKUP_ROOT = Path('/var/lib/lighting-panel/backups')
+MAX_BACKUP_BYTES = 20 * 1024 * 1024 * 1024
+
+def server_volume(client, server_id):
+    volume = client.volumes.get(f'lighting-server-data-{int(server_id)}')
+    labels = volume.attrs.get('Labels', {}) or {}
+    if labels.get(LABEL_OWNER) != 'true' or labels.get('net.lightingpanel.server-id') != str(server_id):
+        raise RuntimeError('Server volume ownership validation failed')
+    mountpoint = Path(volume.attrs['Mountpoint']).resolve()
+    if not mountpoint.is_dir():
+        raise RuntimeError('Server volume mountpoint is unavailable')
+    return volume, mountpoint
+
+def backup_directory(server_id):
+    directory = BACKUP_ROOT / str(int(server_id))
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    directory.chmod(0o700)
+    return directory
+
+def create_server_backup(client, server_id, mountpoint, label='manual'):
+    total = sum(p.stat().st_size for p in mountpoint.rglob('*') if p.is_file() and not p.is_symlink())
+    if total > MAX_BACKUP_BYTES:
+        raise ValueError('Server data exceeds the 20 GiB per-backup safety limit')
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    backup_id = f'{stamp}-{uuid.uuid4().hex[:10]}'
+    directory = backup_directory(server_id)
+    target = directory / f'{backup_id}.tar.gz'
+    temporary = directory / f'.{backup_id}.tmp'
+    try:
+        with tarfile.open(temporary, 'w:gz', compresslevel=3) as archive:
+            for item in sorted(mountpoint.iterdir(), key=lambda p:p.name):
+                archive.add(item, arcname=item.name, recursive=True)
+        temporary.replace(target)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    return {'id':backup_id,'filename':target.name,'size_bytes':target.stat().st_size,'created_at':stamp,'label':label}
+
+def list_server_backups(server_id):
+    directory = backup_directory(server_id)
+    output = []
+    for item in sorted(directory.glob('*.tar.gz'), key=lambda p:p.name, reverse=True)[:100]:
+        backup_id = item.name[:-7]
+        if not __import__('re').fullmatch(r'\d{8}T\d{6}Z-[a-f0-9]{10}', backup_id):
+            continue
+        output.append({'id':backup_id,'filename':item.name,'size_bytes':item.stat().st_size,'created_at':backup_id[:16]})
+    return output
+
+def restore_server_backup(client, server_id, container, mountpoint, backup_id):
+    if not __import__('re').fullmatch(r'\d{8}T\d{6}Z-[a-f0-9]{10}', str(backup_id)):
+        raise ValueError('Invalid backup identifier')
+    directory = backup_directory(server_id).resolve()
+    archive_path = (directory / (str(backup_id)+'.tar.gz')).resolve()
+    if archive_path.parent != directory or not archive_path.is_file():
+        raise ValueError('Backup does not exist on this node')
+    with tarfile.open(archive_path, 'r:gz') as archive:
+        members = archive.getmembers()
+        for member in members:
+            name = Path(member.name)
+            if name.is_absolute() or '..' in name.parts or member.issym() or member.islnk() or member.isdev() or member.isfifo():
+                raise ValueError('Backup contains an unsafe archive entry')
+    was_running = container.status == 'running'
+    if was_running:
+        container.stop(timeout=30)
+    try:
+        create_server_backup(client, server_id, mountpoint, label='pre-restore')
+        for child in mountpoint.iterdir():
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+        with tarfile.open(archive_path, 'r:gz') as archive:
+            archive.extractall(mountpoint, members=members)
+    except Exception:
+        if was_running:
+            container.start()
+        raise
+    if was_running:
+        container.start()
+    return {'restored_backup':backup_id,'previous_state':'running' if was_running else 'stopped'}
+
+def create_minecraft_container(client, server_id, version, memory_mb, cpu_limit, port):
+    return client.containers.run(
+        IMAGE, name=container_name(server_id), detach=True,
+        environment={'EULA':'TRUE','TYPE':'PAPER','VERSION':version,'MEMORY':f'{int(memory_mb * 0.8)}M','TZ':'UTC'},
+        ports={'25565/tcp':('0.0.0.0',int(port))},
+        volumes={f'lighting-server-data-{server_id}':{'bind':'/data','mode':'rw'}},
+        mem_limit=f'{int(memory_mb)}m', nano_cpus=int(float(cpu_limit)*1_000_000_000),
+        pids_limit=512, init=True, tty=True, stdin_open=True,
+        labels={LABEL_OWNER:'true','net.lightingpanel.server-id':str(server_id)},
+        restart_policy={'Name':'unless-stopped'}, cap_drop=['NET_RAW','SYS_CHROOT','MKNOD'],
+        security_opt=['no-new-privileges:true'])
+
+def upgrade_minecraft_server(client, server_id, container, payload):
+    version = str(payload.get('version',''))
+    if not __import__('re').fullmatch(r'\d+\.\d+(\.\d+)?', version):
+        raise ValueError('Choose a valid Minecraft release version')
+    memory_mb = int(payload.get('memory_mb',0)); cpu_limit = float(payload.get('cpu_limit',0)); port = int(payload.get('port',0))
+    if not 512 <= memory_mb <= 16384 or not 0.5 <= cpu_limit <= 16 or not 25565 <= port <= 25999:
+        raise ValueError('Server resource settings are invalid')
+    _, mountpoint = server_volume(client, server_id)
+    old_version = str(payload.get('previous_version','LATEST'))
+    was_running = container.status == 'running'
+    if was_running:
+        container.stop(timeout=30)
+    try:
+        create_server_backup(client, server_id, mountpoint, label='pre-upgrade')
+        container.remove(v=False)
+        client.images.pull(IMAGE)
+        replacement = create_minecraft_container(client, server_id, version, memory_mb, cpu_limit, port)
+        return {'version':version,'docker_id':replacement.id,'backup_created':True}
+    except Exception:
+        try:
+            create_minecraft_container(client, server_id, old_version, memory_mb, cpu_limit, port)
+        except Exception:
+            log.exception('Could not recreate previous Minecraft version after failed upgrade')
+        raise
+
+def run_backup_task(client, action, payload, server_id, container):
+    _, mountpoint = server_volume(client, server_id)
+    if action == 'backup_list':
+        return {'backups':list_server_backups(server_id)}
+    if action == 'backup_create':
+        was_running = container.status == 'running'
+        if was_running:
+            container.stop(timeout=30)
+        try:
+            item = create_server_backup(client, server_id, mountpoint)
+        finally:
+            if was_running:
+                container.start()
+        return {'backup':item,'backups':list_server_backups(server_id)}
+    if action == 'backup_restore':
+        return restore_server_backup(client, server_id, container, mountpoint, payload.get('backup_id',''))
+    raise ValueError('Unsupported backup operation')
+
 def run_task(client, task):
     action = task.get('action')
     payload = task.get('payload') or {}
@@ -186,6 +327,11 @@ def run_task(client, task):
         raise RuntimeError('Managed server container does not exist')
     if container.labels.get(LABEL_OWNER) != 'true' or container.labels.get('net.lightingpanel.server-id') != str(server_id):
         raise RuntimeError('Refusing to operate on a container not owned by Lighting Panel')
+    if action in ('backup_create','backup_list','backup_restore'):
+        return {'data':run_backup_task(client, action, payload, server_id, container)}
+    if action == 'version_upgrade':
+        result = upgrade_minecraft_server(client, server_id, container, payload)
+        return {'docker_id':result['docker_id'],'data':result}
     if action in ('console','console_logs'):
         return {'data':run_console_operation(container, action, payload)}
     if action.startswith('file_'):
