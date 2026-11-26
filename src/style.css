@@ -169,3 +169,23 @@
 .server-info-line code{color:#d9edfa;font-size:10px;text-align:right;overflow-wrap:anywhere}
 @media(max-width:900px){.server-overview-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:600px){.server-overview-lower{grid-template-columns:1fr}.server-overview-grid{grid-template-columns:1fr 1fr}.server-overview-card{padding:13px}.server-overview-card>strong{font-size:18px}}
+
+
+/* LPGP global command palette */
+.command-backdrop{position:fixed;inset:0;z-index:120;display:flex;justify-content:center;align-items:flex-start;padding:13vh 18px 24px;background:#02070dcc;backdrop-filter:blur(8px)}
+.command-palette{width:min(560px,100%);max-height:72vh;overflow:hidden;border:1px solid #31536b;border-radius:14px;background:#0c1925;box-shadow:0 30px 100px #000c}
+.command-input-row{height:58px;display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid #263e52;color:#8bd8ff}
+.command-input-row input{flex:1;min-width:0;border:0;outline:0;background:transparent;color:#eaf7ff;font:13px 'DM Sans',sans-serif}
+.command-input-row input::placeholder{color:#698398}
+.command-input-row kbd,.command-footer kbd{padding:3px 6px;border:1px solid #355168;border-radius:5px;color:#8aa2b5;font:9px 'DM Sans',sans-serif}
+.command-input-row button{display:grid;place-items:center;border:0;background:transparent;color:#8ca6b9;cursor:pointer}
+.command-results{max-height:calc(72vh - 112px);overflow:auto;padding:12px}
+.command-results>small{display:block;margin:8px 7px;color:#6f8ba1;font-size:8px;font-weight:800;letter-spacing:1.4px}
+.command-results>button{width:100%;min-height:43px;display:flex;align-items:center;gap:11px;padding:8px;border:1px solid transparent;border-radius:8px;background:transparent;color:#d5e8f5;text-align:left;font-size:11px;cursor:pointer}
+.command-results>button:hover{border-color:#2d526b;background:#142b3d}
+.command-results>button>svg{margin-left:auto;color:#6f91a8}
+.command-result-icon{width:28px;height:28px;display:grid;place-items:center;border-radius:7px;background:#45b8f21a;color:#8bd8ff}
+.command-results>button em{display:block;margin-top:3px;color:#7691a5;font-size:9px;font-style:normal}
+.command-no-results{padding:18px 8px;color:#8299aa;font-size:11px}
+.command-footer{display:flex;justify-content:space-between;gap:10px;padding:11px 16px;border-top:1px solid #263e52;color:#718ba0;font-size:9px}
+.command-footer span:last-child{display:flex;align-items:center;gap:6px}
