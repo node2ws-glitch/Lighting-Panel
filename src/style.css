@@ -152,3 +152,20 @@
 .workspace-tabs button.active{color:#a3e1ff;border-color:#45b8f2;background:#168bc922}
 @media(max-width:900px){.main-collapsed{margin-left:82px}.top-search{display:none}}
 @media(max-width:700px){.sidebar-collapsed{width:254px;padding:25px 17px 15px}.sidebar-collapsed .brand{justify-content:flex-start;padding-left:8px;padding-right:8px}.sidebar-collapsed .brand-copy,.sidebar-collapsed .workspace-copy,.sidebar-collapsed .workspace>svg,.sidebar-collapsed .nav-heading,.sidebar-collapsed .nav-link span,.sidebar-collapsed .nav-link i,.sidebar-collapsed .promo-card,.sidebar-collapsed .profile-name,.sidebar-collapsed .profile>svg{display:initial}.sidebar-collapsed .workspace{justify-content:flex-start;padding:12px 10px}.sidebar-collapsed .nav-link{justify-content:flex-start;padding:0 11px}.sidebar-collapsed .sidebar-deploy{justify-content:center;padding:10px}.sidebar-collapsed .sidebar-deploy span{display:inline}.sidebar-collapsed .profile{justify-content:flex-start}.sidebar-collapse{display:none}.main-collapsed{margin-left:0}.fleet-summary-grid{grid-template-columns:1fr}.fleet-server-grid{grid-template-columns:1fr}}
+
+
+/* JTG-inspired server overview workspace */
+.server-overview{display:grid;gap:15px;margin-top:16px}
+.server-overview-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:11px}
+.server-overview-card{min-width:0;padding:17px;border:1px solid #294257;border-radius:10px;background:linear-gradient(145deg,#132333,#0d1925)}
+.server-overview-card>span{display:block;color:#7894aa;font-size:8px;font-weight:800;letter-spacing:1.25px}
+.server-overview-card>strong{display:block;margin:10px 0 4px;color:#edf8ff;font:600 22px 'Space Grotesk',sans-serif;overflow-wrap:anywhere;text-transform:capitalize}
+.server-overview-card>small{color:#7890a4;font-size:9px}
+.server-overview-status.is-online{color:#66e0ad}
+.server-overview-lower{display:grid;grid-template-columns:1fr 1fr;gap:13px}
+.server-overview-lower .backup-card{min-width:0}
+.server-info-line{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid #263b4e;color:#9ab0c2;font-size:10px}
+.server-info-line:last-child{border-bottom:0}
+.server-info-line code{color:#d9edfa;font-size:10px;text-align:right;overflow-wrap:anywhere}
+@media(max-width:900px){.server-overview-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:600px){.server-overview-lower{grid-template-columns:1fr}.server-overview-grid{grid-template-columns:1fr 1fr}.server-overview-card{padding:13px}.server-overview-card>strong{font-size:18px}}
