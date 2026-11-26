@@ -27,7 +27,7 @@ Do not replace the backend with JTG's Express/JSON storage stack. The two backen
 ## Migration phases
 
 1. **Brand and foundation** — rename visible product identity to LPGP, add LightingPlays credit, establish the LPGP sky-blue and yellow visual identity, using JTG's layout as the reference. (Started on this branch.)
-2. **Interface migration** — rebuild the application shell, navigation, dashboard, server list, server creation, server workspace, account and admin pages to match the JTG information architecture while calling LPGP's existing API.
+2. **Interface migration** — in progress. The current branch now has a JTG-inspired collapsible navigation shell, grouped navigation, a deploy-server entry, fleet summary cards, a responsive server-card grid, and the existing API-backed server workspace (console, file manager, Minecraft controls, backups, and per-server team access). Remaining work: account/admin page parity, richer server metrics, global search/notifications, and additional JTG workflows that have compatible LPGP API support.
 3. **Feature parity** — bring over useful JTG workflows (server console, file manager, backups, plugins/mods, SFTP where safely implemented, API-key management, sub-users, and system settings) through compatible FastAPI endpoints or new tested endpoints.
 4. **Free distribution** — verify there is no product activation/licence enforcement; document installation and update paths; keep optional host billing separate from panel licensing.
 5. **Release hardening** — run frontend builds, backend tests, migrations, node-agent integration tests, authorization tests, backup/restore tests, and a clean install on a disposable VPS before public release.
