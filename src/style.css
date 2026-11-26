@@ -72,3 +72,21 @@
 .ops-endpoints code{font-size:9px;color:#9b8aff}
 @media(max-width:800px){.ops-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.ops-endpoints{grid-template-columns:1fr}}
 @media(max-width:520px){.billing-plan{grid-template-columns:auto 1fr}.billing-status{grid-column:1/-1;justify-self:start}.billing-plan-actions,.billing-renewal{grid-column:1/-1}.billing-invoice{flex-wrap:wrap}.billing-invoice strong{margin-left:46px}.billing-invoice a{margin-left:auto}.ops-grid{grid-template-columns:1fr}}
+
+
+/* LPGP visual foundation — JTG-inspired monochrome control-room styling. */
+:root{--muted:#929292;--line:#242424;--panel:#0b0b0d;--purple:#e8e8e8;--cyan:#bcbcbc}
+.app-shell{background:radial-gradient(ellipse at 75% -18%,rgba(255,255,255,.055),transparent 40%),#050506}
+.sidebar{background:#080809;border-right-color:#222}
+.brand-mark{background:linear-gradient(145deg,#f1f1f1,#9b9b9b);color:#050505;box-shadow:0 6px 25px #ffffff16}
+.nav-link.active{color:#fff;background:linear-gradient(90deg,#ffffff16,#ffffff04);box-shadow:inset 2px 0 #e5e5e5}
+.nav-link.active svg,.eyebrow,.billing-note svg{color:#e5e5e5}
+.workspace,.stat-card,.panel{background:linear-gradient(145deg,#111113,#0b0b0d);border-color:#292929}
+.button-primary{border-color:#dedede;background:linear-gradient(120deg,#f2f2f2,#bcbcbc);color:#080808;box-shadow:0 5px 18px #ffffff16}
+.button-secondary,.help-button{background:#111113;border-color:#303030;color:#ddd}
+.auth-shell{background:radial-gradient(ellipse at 50% 15%,#202020 0%,#090909 44%,#030303 100%)}
+.auth-card{border-color:#303030;background:linear-gradient(145deg,rgba(20,20,22,.97),rgba(8,8,9,.98));box-shadow:0 30px 100px #000b}
+.auth-brand>span{background:linear-gradient(145deg,#f1f1f1,#999);color:#050505}
+.auth-brand b,.auth-submit{color:#fff}
+.auth-submit{background:linear-gradient(120deg,#e8e8e8,#aaa);color:#050505}
+.auth-footer{border-top-color:#292929}
