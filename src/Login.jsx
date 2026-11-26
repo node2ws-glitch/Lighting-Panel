@@ -15,7 +15,7 @@ export default function Login({ onLogin }) {
     finally { setBusy(false); }
   }
   return <main className="auth-shell"><div className="auth-glow"/><motion.section className="auth-card" initial={{opacity:0,y:18}} animate={{opacity:1,y:0}}>
-    <div className="auth-brand"><span><Zap size={25} fill="currentColor"/></span><div><b>LPGP</b><small>INFRASTRUCTURE CONTROL PLANE</small></div></div>
+    <div className="auth-brand"><span><Zap size={25} fill="currentColor"/></span><div><b>LPGP</b><small>MADE BY LIGHTINGPLAYS</small></div></div>
     <div className="auth-kicker"><i/> SECURE ADMIN ACCESS</div><h1>Welcome back.</h1><p className="auth-copy">Sign in to manage your infrastructure, game servers and nodes.</p>
     <form onSubmit={submit}><label htmlFor="login-email">Email address</label><div className="auth-input"><Mail size={17}/><input id="login-email" type="email" autoComplete="username" placeholder="admin@example.com" value={email} onChange={e=>setEmail(e.target.value)} required/></div><label htmlFor="login-password">Password</label><div className="auth-input"><LockKeyhole size={17}/><input id="login-password" type="password" autoComplete="current-password" placeholder="Enter your password" value={password} onChange={e=>setPassword(e.target.value)} required/></div>
     {error&&<div className="auth-error">{error}</div>}<button className="auth-submit" disabled={busy}>{busy?'Authenticating…':'Sign in to LPGP'} <ArrowRight size={17}/></button></form>
