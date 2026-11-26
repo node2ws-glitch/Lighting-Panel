@@ -1,6 +1,6 @@
-# Lighting Panel
+# LPGP — LightingPlays Game Panel
 
-Lighting Panel is an independent game-server hosting control plane with a dark, electric visual identity. It is inspired by common hosting-panel workflows; it does not copy Pterodactyl source code or assets.
+LPGP is an independent game-server hosting control plane with a dark, electric visual identity. It is inspired by common hosting-panel workflows; it does not copy Pterodactyl source code or assets.
 
 ## Implemented foundations
 
@@ -113,7 +113,7 @@ The project should only mark a phase complete after its tests and end-to-end acc
 ## Phase 9 — customer ownership and server team permissions
 
 - Administrators can deploy a server for an existing active customer account by supplying that account's email as the optional owner email. Customers can see only servers they own or that have been shared with them.
-- Server owners can grant an existing non-admin account access to one server. No invitation email is sent; the recipient must already have an active Lighting Panel account.
+- Server owners can grant an existing non-admin account access to one server. No invitation email is sent; the recipient must already have an active LPGP account.
 - Every membership receives `server.read` plus only the selected grants: console, start/stop/restart, file read/write, backup read/create/restore, and Minecraft management/version upgrades.
 - Server-specific API routes check the required permission on every request. Panel administrator accounts retain administrative access. Team members cannot manage membership, access VPS node administration, create servers, or delete the owner's server.
 - Owners can list and revoke team memberships. Grants are stored in a dedicated `server_subusers` table with a unique server/user pair and foreign-key cleanup.
