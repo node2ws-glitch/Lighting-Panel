@@ -1,6 +1,10 @@
 # LPGP — LightingPlays Game Panel
 
-LPGP is an independent game-server hosting control plane with a dark, electric visual identity. It is inspired by common hosting-panel workflows; it does not copy Pterodactyl source code or assets.
+LPGP (LightingPlays Game Panel) is a free game-server management panel made by LightingPlays. The interface migration uses JTG Panel as its visual reference while retaining LPGP's FastAPI, PostgreSQL, Docker and VPS node-agent runtime. LPGP does not require a paid product licence, activation code, or licence-server connection.
+
+**Made by LightingPlays. Free panel software for everyone.**
+
+See [the LPGP migration plan](docs/LPGP-MIGRATION.md) for architecture decisions and release phases.
 
 ## Implemented foundations
 
