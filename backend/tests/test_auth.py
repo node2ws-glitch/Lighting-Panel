@@ -388,3 +388,31 @@ def test_fabric_server_type_and_mod_manager_task_permissions():
     assert task['payload']['kind'] == 'mod'
     assert client.post(f'/api/v1/admin/servers/{sid}/mods', headers=admin,
         json={'action':'install','kind':'mod','filename':'bad.jar','url':'http://127.0.0.1/evil.jar'}).status_code == 422
+
+
+def test_additional_server_allocations_queue_container_reconfiguration():
+    login = client.post('/api/v1/auth/login', json={'email':'admin@example.com','password':'Correct-Horse-123!'}).json()
+    admin = {'Authorization':f"Bearer {login['access_token']}"}
+    enrolled = client.post('/api/v1/admin/nodes', headers=admin, json={'name':'allocation-node','fqdn':'allocation.example.test'}).json()
+    node_headers = {'X-Node-Token':enrolled['token']}
+    client.post('/api/v1/nodes/heartbeat', headers=node_headers, json={
+        'cpu_percent':1,'memory_total':8*1024**3,'memory_used':1024**3,'disk_total':80*1024**3,'disk_used':5*1024**3
+    })
+    created = client.post('/api/v1/admin/servers', headers=admin, json={
+        'name':'Allocation SMP','node_id':enrolled['node']['id'],'memory_mb':1024,'cpu_limit':1
+    }).json()
+    provision = client.get('/api/v1/nodes/tasks', headers=node_headers).json()[0]
+    client.post(f"/api/v1/nodes/tasks/{provision['id']}/result", headers=node_headers, json={'docker_id':'docker-allocation'})
+    sid = created['id']
+    added = client.post(f'/api/v1/admin/servers/{sid}/allocations', headers=admin,
+        json={'container_port':25566,'protocol':'udp'})
+    assert added.status_code == 202, added.text
+    assert added.json()['container_port'] == 25566
+    queued = client.get('/api/v1/nodes/tasks', headers=node_headers).json()
+    task = next(item for item in queued if item['action'] == 'allocation_update')
+    assert task['payload']['allocations'][0]['container_port'] == 25565
+    assert task['payload']['allocations'][1]['container_port'] == 25566
+    client.post(f"/api/v1/nodes/tasks/{task['id']}/result", headers=node_headers,
+        json={'docker_id':'docker-reconfigured','data':{'status':'online','allocations':2}})
+    assert client.get(f'/api/v1/admin/servers/{sid}/allocations', headers=admin).json()[0]['protocol'] == 'udp'
+    assert client.delete(f"/api/v1/admin/servers/{sid}/allocations/{added.json()['id']}", headers=admin).status_code == 202
