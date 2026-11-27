@@ -164,3 +164,17 @@ class SftpAccess(Base):
     port: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
     status: Mapped[str] = mapped_column(String(16), default='provisioning', nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class DatabaseService(Base):
+    __tablename__ = 'database_services'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    server_id: Mapped[int] = mapped_column(ForeignKey('game_servers.id', ondelete='CASCADE'), nullable=False, index=True)
+    node_id: Mapped[int] = mapped_column(ForeignKey('nodes.id', ondelete='CASCADE'), nullable=False, index=True)
+    db_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    database_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    username: Mapped[str] = mapped_column(String(32), nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    port: Mapped[int] = mapped_column(Integer, unique=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default='provisioning', nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
