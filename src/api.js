@@ -66,3 +66,7 @@ export const updateBackupSchedule = (id, scheduleId, payload) => request('/admin
 export const deleteBackupSchedule = (id, scheduleId) => request('/admin/servers/' + id + '/backup-schedules/' + scheduleId, { method: 'DELETE' });
 
 export const manageServerMods = (id, payload) => request('/admin/servers/' + id + '/mods', { method: 'POST', body: JSON.stringify(payload) });
+
+export const listServerAllocations = (id) => request('/admin/servers/' + id + '/allocations');
+export const createServerAllocation = (id, payload) => request('/admin/servers/' + id + '/allocations', { method: 'POST', body: JSON.stringify(payload) });
+export const deleteServerAllocation = (id, allocationId) => request('/admin/servers/' + id + '/allocations/' + allocationId, { method: 'DELETE' });
