@@ -406,6 +406,89 @@ def reconfigure_server_allocations(client, server_id, container, payload):
         log.exception('Allocation reconfiguration failed for server %s', server_id)
         raise
 
+
+def run_sftp_task(client, action, payload, server_id):
+    server_volume(client, server_id)
+    name = f'lighting-sftp-{int(server_id)}'
+    config_volume = f'lighting-sftp-config-{int(server_id)}'
+    if action == 'sftp_delete':
+        try:
+            container = client.containers.get(name)
+            if container.labels.get(LABEL_OWNER) != 'true' or container.labels.get('net.lightingpanel.sftp-server-id') != str(server_id):
+                raise RuntimeError('Refusing to remove an unmanaged SFTP container')
+            container.remove(force=True)
+        except docker.errors.NotFound:
+            pass
+        try:
+            volume = client.volumes.get(config_volume)
+            if volume.attrs.get('Labels', {}).get(LABEL_OWNER) == 'true':
+                volume.remove(force=False)
+        except docker.errors.NotFound:
+            pass
+        return {'data':{'status':'removed'}}
+    if action != 'sftp_create':
+        raise ValueError('Unsupported SFTP operation')
+    port = int(payload.get('port',0))
+    username = str(payload.get('username',''))
+    password = str(payload.get('password',''))
+    if not 31000 <= port <= 31999 or not __import__('re').fullmatch(r'lpgp[0-9]{1,10}',username) or len(password) < 32:
+        raise ValueError('SFTP provisioning parameters are invalid')
+    try:
+        existing = client.containers.get(name)
+        if existing.labels.get(LABEL_OWNER) != 'true' or existing.labels.get('net.lightingpanel.sftp-server-id') != str(server_id):
+            raise RuntimeError('SFTP container name collision; refusing to modify an unmanaged container')
+        return {'data':{'status':'active','port':port}}
+    except docker.errors.NotFound:
+        pass
+    client.volumes.create(name=config_volume,labels={LABEL_OWNER:'true','net.lightingpanel.sftp-server-id':str(server_id)})
+    admin_user = 'lpgp-admin'
+    admin_password = secrets.token_urlsafe(36)
+    container = client.containers.run(
+        'drakkan/sftpgo:latest',name=name,detach=True,
+        environment={
+            'SFTPGO_DEFAULT_ADMIN_USERNAME':admin_user,
+            'SFTPGO_DEFAULT_ADMIN_PASSWORD':admin_password,
+            'SFTPGO_HTTPD__BINDINGS__0__ADDRESS':'0.0.0.0',
+            'SFTPGO_HTTPD__BINDINGS__0__PORT':'8080',
+            'SFTPGO_SFTPD__BINDINGS__0__ADDRESS':'0.0.0.0',
+            'SFTPGO_SFTPD__BINDINGS__0__PORT':'2022',
+            'SFTPGO_LOG_LEVEL':'info',
+        },
+        ports={'2022/tcp':('0.0.0.0',port)},
+        volumes={f'lighting-server-data-{server_id}':{'bind':'/srv/sftpgo/data','mode':'rw'},
+                 config_volume:{'bind':'/var/lib/sftpgo','mode':'rw'}},
+        labels={LABEL_OWNER:'true','net.lightingpanel.sftp-server-id':str(server_id)},
+        restart_policy={'Name':'unless-stopped'},pids_limit=256,
+        cap_drop=['NET_RAW','SYS_CHROOT','MKNOD'],security_opt=['no-new-privileges:true'])
+    try:
+        for _ in range(30):
+            container.reload()
+            networks = container.attrs.get('NetworkSettings',{}).get('Networks',{}) or {}
+            ip = next((item.get('IPAddress') for item in networks.values() if item.get('IPAddress')), '')
+            if ip:
+                try:
+                    token_response = requests.post(f'http://{ip}:8080/api/v2/token',auth=(admin_user,admin_password),timeout=(2,4))
+                    if token_response.ok:
+                        access_token = token_response.json().get('access_token')
+                        if access_token:
+                            user_response = requests.post(f'http://{ip}:8080/api/v2/users',
+                                headers={'Authorization':'Bearer '+access_token},
+                                json={'username':username,'password':password,'home_dir':'/srv/sftpgo/data',
+                                      'permissions':['*'],'status':1,'uid':1000,'gid':1000},
+                                timeout=(3,10))
+                            user_response.raise_for_status()
+                            return {'data':{'status':'active','port':port,'username':username}}
+                except requests.RequestException:
+                    pass
+            time.sleep(1)
+        raise RuntimeError('SFTPGo API did not become ready or could not create the SFTP account')
+    except Exception:
+        try:
+            container.remove(force=True)
+        except Exception:
+            pass
+        raise
+
 def run_task(client, task):
     action = task.get('action')
     payload = task.get('payload') or {}
@@ -469,6 +552,8 @@ def run_task(client, task):
         raise RuntimeError('Managed server container does not exist')
     if container.labels.get(LABEL_OWNER) != 'true' or container.labels.get('net.lightingpanel.server-id') != str(server_id):
         raise RuntimeError('Refusing to operate on a container not owned by Lighting Panel')
+    if action in ('sftp_create','sftp_delete'):
+        return run_sftp_task(client, action, payload, server_id)
     if action == 'allocation_update':
         return reconfigure_server_allocations(client, server_id, container, payload)
     if action == 'mod_manager':
