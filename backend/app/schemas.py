@@ -210,3 +210,13 @@ class ApiKeyRead(BaseModel):
     last_used_at: datetime | None
     expires_at: datetime | None
     revoked_at: datetime | None
+
+
+class SftpAccessRead(BaseModel):
+    id: int
+    server_id: int
+    username: str
+    port: int
+    status: str
+    host: str
+    created_at: datetime
