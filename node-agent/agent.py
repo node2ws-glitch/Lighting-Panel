@@ -557,12 +557,18 @@ def run_database_task(client, action, payload, server_id, server_container):
         raise ValueError('Database port or password is invalid')
     try:
         existing = client.containers.get(name)
-        if existing.labels.get(LABEL_OWNER) != 'true' or existing.labels.get('net.lightingpanel.database-id') != str(database_id):
+        if existing.labels.get(LABEL_OWNER) != 'true' or existing.labels.get('net.lightingpanel.database-id') != str(database_id) or existing.labels.get('net.lightingpanel.server-id') != str(server_id):
             raise RuntimeError('Database container name collision; refusing to modify an unmanaged container')
+        existing.reload()
+        db_networks = existing.attrs.get('NetworkSettings',{}).get('Networks',{}) or {}
+        if network.name not in db_networks:
+            network.connect(existing, aliases=[name])
         return {'data':{'status':'active','internal_host':name,'internal_port':3306 if db_type == 'mariadb' else 5432}}
     except docker.errors.NotFound:
         pass
-    client.volumes.create(name=volume_name,labels={LABEL_OWNER:'true','net.lightingpanel.database-id':str(database_id)})
+    db_volume = client.volumes.create(name=volume_name,labels={LABEL_OWNER:'true','net.lightingpanel.database-id':str(database_id)})
+    if db_volume.attrs.get('Labels',{}).get(LABEL_OWNER) != 'true' or db_volume.attrs.get('Labels',{}).get('net.lightingpanel.database-id') != str(database_id):
+        raise RuntimeError('Database volume ownership validation failed')
     env = {'MARIADB_DATABASE':database_name,'MARIADB_USER':username,'MARIADB_PASSWORD':password,'MARIADB_ROOT_PASSWORD':secrets.token_urlsafe(36)} if db_type == 'mariadb' else {'POSTGRES_DB':database_name,'POSTGRES_USER':username,'POSTGRES_PASSWORD':password}
     image = 'mariadb:11.4' if db_type == 'mariadb' else 'postgres:16-alpine'
     internal_port = 3306 if db_type == 'mariadb' else 5432
@@ -570,7 +576,7 @@ def run_database_task(client, action, payload, server_id, server_container):
         image,name=name,detach=True,environment=env,
         ports={f'{internal_port}/tcp':('0.0.0.0',port)},
         volumes={volume_name:{'bind':'/var/lib/mysql' if db_type == 'mariadb' else '/var/lib/postgresql/data','mode':'rw'}},
-        mem_limit='768m',nano_cpus=500000000,pids_limit=256,
+        network=network.name,mem_limit='768m',nano_cpus=500000000,pids_limit=256,
         labels={LABEL_OWNER:'true','net.lightingpanel.database-id':str(database_id),'net.lightingpanel.server-id':str(server_id)},
         restart_policy={'Name':'unless-stopped'},cap_drop=['NET_RAW','SYS_CHROOT','MKNOD'],
         security_opt=['no-new-privileges:true'])
