@@ -9,7 +9,7 @@ from app.audit import record_event
 from app.database import get_db
 from app.dependencies import get_current_user, require_admin
 from app.models import AuditEvent, GameServer, Node, NodeTask, User, ServerSubuser, BackupSchedule
-from app.schemas import LoginRequest, PasswordChange, MessageResponse, NodeCreate, NodeHeartbeat, NodeRead, NodeTaskResult, ServerAction, ServerCreate, ServerRead, TokenResponse, UserCreate, UserRead, ConsoleCommand, ServerFileRequest, MinecraftAction, BackupAction, VersionUpgrade, ServerMemberCreate, BackupScheduleCreate, BackupScheduleUpdate, BackupScheduleRead
+from app.schemas import LoginRequest, PasswordChange, MessageResponse, NodeCreate, NodeHeartbeat, NodeRead, NodeTaskResult, ServerAction, ServerCreate, ServerRead, TokenResponse, UserCreate, UserRead, ConsoleCommand, ServerFileRequest, MinecraftAction, BackupAction, VersionUpgrade, ServerMemberCreate, BackupScheduleCreate, BackupScheduleUpdate, BackupScheduleRead, ModManagerRequest
 from app.security import DUMMY_HASH, create_access_token, hash_password, verify_password
 
 router = APIRouter()
@@ -185,12 +185,12 @@ def create_server(payload: ServerCreate, actor: User = Depends(require_admin), d
         owner = db.scalar(select(User).where(User.email == str(payload.owner_email).lower(), User.is_active.is_(True)))
         if owner is None or owner.role == 'admin':
             raise HTTPException(status_code=400, detail='Choose an active customer account, not an administrator')
-    server = GameServer(node_id=node.id, owner_id=owner.id, name=payload.name.strip(), version=payload.version,
+    server = GameServer(node_id=node.id, owner_id=owner.id, name=payload.name.strip(), version=payload.version, server_type=payload.server_type,
         memory_mb=payload.memory_mb, cpu_limit=payload.cpu_limit, allocation_port=port, status='installing')
     db.add(server)
     db.flush()
     task = NodeTask(node_id=node.id, server_id=server.id, action='provision',
-        payload=json.dumps({'server_id':server.id,'name':server.name,'version':server.version,'memory_mb':server.memory_mb,'cpu_limit':server.cpu_limit,'port':server.allocation_port}))
+        payload=json.dumps({'server_id':server.id,'name':server.name,'version':server.version,'server_type':server.server_type,'memory_mb':server.memory_mb,'cpu_limit':server.cpu_limit,'port':server.allocation_port,'server_type':server.server_type}))
     db.add(task)
     record_event(db, 'admin.server.create', actor, f'Queued server {server.id} on node {node.name}')
     db.commit()
@@ -461,6 +461,29 @@ def minecraft_action(server_id: int, payload: MinecraftAction, actor: User = Dep
     db.refresh(task)
     return {'task_id':task.id,'status':task.status,'command':command}
 
+
+
+@router.post('/admin/servers/{server_id}/mods', status_code=status.HTTP_202_ACCEPTED)
+def manage_server_mods(server_id: int, payload: ModManagerRequest, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    server, node = get_managed_server(server_id, db, actor, 'server.manage')
+    if payload.kind == 'plugin' and server.server_type != 'paper':
+        raise HTTPException(status_code=409, detail='Plugins require a Paper server. Change the server type before installing plugins.')
+    if payload.kind == 'mod' and server.server_type not in ('fabric', 'forge'):
+        raise HTTPException(status_code=409, detail='Mods require a Fabric or Forge server.')
+    if payload.action == 'install':
+        if not payload.url or not payload.url.startswith('https://'):
+            raise HTTPException(status_code=422, detail='A direct HTTPS JAR download URL is required')
+        if not payload.filename:
+            raise HTTPException(status_code=422, detail='Provide a .jar filename for this download')
+    if payload.action == 'remove' and not payload.filename:
+        raise HTTPException(status_code=422, detail='Choose a JAR file to remove')
+    task = NodeTask(node_id=node.id, server_id=server.id, action='mod_manager',
+        payload=json.dumps({'server_id':server.id,'action':payload.action,'kind':payload.kind,'url':payload.url,'filename':payload.filename}))
+    db.add(task)
+    record_event(db, 'server.mod_manager.'+payload.action, actor, f'{payload.kind} manager {payload.action} queued for server {server.id}')
+    db.commit()
+    db.refresh(task)
+    return {'task_id':task.id,'status':task.status}
 
 @router.post('/admin/servers/{server_id}/backups', status_code=status.HTTP_202_ACCEPTED)
 def manage_server_backups(server_id: int, payload: BackupAction, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
