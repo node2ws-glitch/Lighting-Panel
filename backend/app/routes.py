@@ -577,6 +577,9 @@ def create_server_database(server_id: int, payload: DatabaseCreate, actor: User 
     existing = db.scalars(select(DatabaseService).where(DatabaseService.server_id == server_id)).all()
     if len(existing) >= 3:
         raise HTTPException(status_code=409, detail='A server can have at most three managed databases')
+    reserved_names = {'mysql','information_schema','performance_schema','sys','postgres','template0','template1'}
+    if payload.database_name.lower() in reserved_names or payload.username.lower() in {'root','postgres','mysql','mariadb.sys'}:
+        raise HTTPException(status_code=422, detail='Choose a non-system database name and username')
     if any(item.database_name == payload.database_name or item.username == payload.username for item in existing):
         raise HTTPException(status_code=409, detail='Database name or username is already used on this server')
     used = set(db.scalars(select(DatabaseService.port)).all()) | set(db.scalars(select(GameServer.allocation_port)).all()) | set(db.scalars(select(ServerAllocation.port)).all()) | set(db.scalars(select(SftpAccess.port)).all())
