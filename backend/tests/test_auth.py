@@ -360,3 +360,31 @@ def test_backup_schedule_creation_and_due_dispatch():
     assert scheduled['payload']['label'] == 'scheduled'
     assert scheduled['payload']['retention'] == 5
     assert client.delete(f"/api/v1/admin/servers/{sid}/backup-schedules/{schedule.json()['id']}", headers=admin).status_code == 204
+
+
+def test_fabric_server_type_and_mod_manager_task_permissions():
+    login = client.post('/api/v1/auth/login', json={'email':'admin@example.com','password':'Correct-Horse-123!'}).json()
+    admin = {'Authorization':f"Bearer {login['access_token']}"}
+    enrolled = client.post('/api/v1/admin/nodes', headers=admin, json={'name':'fabric-node','fqdn':'fabric.example.test'}).json()
+    node_headers = {'X-Node-Token':enrolled['token']}
+    client.post('/api/v1/nodes/heartbeat', headers=node_headers, json={
+        'cpu_percent':1,'memory_total':8*1024**3,'memory_used':1024**3,'disk_total':80*1024**3,'disk_used':5*1024**3
+    })
+    created = client.post('/api/v1/admin/servers', headers=admin, json={
+        'name':'Fabric SMP','node_id':enrolled['node']['id'],'memory_mb':1024,'cpu_limit':1,'server_type':'fabric'
+    })
+    assert created.status_code == 202, created.text
+    assert created.json()['server_type'] == 'fabric'
+    sid = created.json()['id']
+    provision = client.get('/api/v1/nodes/tasks', headers=node_headers).json()[0]
+    assert provision['payload']['server_type'] == 'fabric'
+    client.post(f"/api/v1/nodes/tasks/{provision['id']}/result", headers=node_headers, json={'docker_id':'docker-fabric'})
+    plugin = client.post(f'/api/v1/admin/servers/{sid}/mods', headers=admin, json={'action':'list','kind':'plugin'})
+    assert plugin.status_code == 409
+    mods = client.post(f'/api/v1/admin/servers/{sid}/mods', headers=admin, json={'action':'list','kind':'mod'})
+    assert mods.status_code == 202
+    task = client.get('/api/v1/nodes/tasks', headers=node_headers).json()[0]
+    assert task['action'] == 'mod_manager'
+    assert task['payload']['kind'] == 'mod'
+    assert client.post(f'/api/v1/admin/servers/{sid}/mods', headers=admin,
+        json={'action':'install','kind':'mod','filename':'bad.jar','url':'http://127.0.0.1/evil.jar'}).status_code == 422
