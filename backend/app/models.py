@@ -48,6 +48,7 @@ class GameServer(Base):
     owner_id: Mapped[int | None] = mapped_column(ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
     name: Mapped[str] = mapped_column(String(48), nullable=False)
     game: Mapped[str] = mapped_column(String(24), default='minecraft', nullable=False)
+    server_type: Mapped[str] = mapped_column(String(16), default='paper', nullable=False)
     version: Mapped[str] = mapped_column(String(24), default='LATEST', nullable=False)
     memory_mb: Mapped[int] = mapped_column(Integer, nullable=False)
     cpu_limit: Mapped[float] = mapped_column(default=1.0, nullable=False)
