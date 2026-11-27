@@ -70,3 +70,7 @@ export const manageServerMods = (id, payload) => request('/admin/servers/' + id 
 export const listServerAllocations = (id) => request('/admin/servers/' + id + '/allocations');
 export const createServerAllocation = (id, payload) => request('/admin/servers/' + id + '/allocations', { method: 'POST', body: JSON.stringify(payload) });
 export const deleteServerAllocation = (id, allocationId) => request('/admin/servers/' + id + '/allocations/' + allocationId, { method: 'DELETE' });
+
+export const listApiKeys = () => request('/auth/api-keys');
+export const createApiKey = (payload) => request('/auth/api-keys', { method: 'POST', body: JSON.stringify(payload) });
+export const revokeApiKey = (id) => request('/auth/api-keys/' + id, { method: 'DELETE' });
