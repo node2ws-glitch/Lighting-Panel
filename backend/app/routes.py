@@ -1,7 +1,9 @@
+import base64
 import hashlib
 import json
 import secrets
 from datetime import datetime, timedelta, timezone
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import select, or_
 from sqlalchemy.orm import Session
@@ -13,6 +15,13 @@ from app.schemas import LoginRequest, PasswordChange, MessageResponse, NodeCreat
 from app.security import DUMMY_HASH, create_access_token, hash_password, verify_password
 
 router = APIRouter()
+
+def encrypt_node_secret(node: Node, secret: str) -> str:
+    nonce = secrets.token_bytes(12)
+    key = bytes.fromhex(node.token_hash)
+    ciphertext = AESGCM(key).encrypt(nonce, secret.encode('utf-8'), None)
+    return base64.urlsafe_b64encode(nonce + ciphertext).decode('ascii')
+
 
 
 @router.get('/auth/api-keys', response_model=list[ApiKeyRead])
@@ -164,6 +173,10 @@ def rotate_node_token(node_id: int, actor: User = Depends(require_admin), db: Se
     node = db.get(Node, node_id)
     if node is None:
         raise HTTPException(status_code=404, detail='Node not found')
+    pending_secret_task = db.scalar(select(NodeTask.id).where(NodeTask.node_id == node.id,
+        NodeTask.action.in_(['sftp_create','database_create']), NodeTask.status.in_(['pending','claimed'])).limit(1))
+    if pending_secret_task is not None:
+        raise HTTPException(status_code=409, detail='Wait for SFTP or database provisioning tasks to finish before rotating this node token')
     token = secrets.token_urlsafe(48)
     node.token_hash = hashlib.sha256(token.encode()).hexdigest()
     record_event(db, 'admin.node.token.rotate', actor, f'Rotated enrollment credential for node {node.name}')
@@ -577,7 +590,7 @@ def create_server_database(server_id: int, payload: DatabaseCreate, actor: User 
     db.flush()
     task = NodeTask(node_id=node.id,server_id=server.id,action='database_create',payload=json.dumps({
         'server_id':server.id,'database_id':database.id,'db_type':database.db_type,'database_name':database.database_name,
-        'username':database.username,'password':password,'port':port
+        'username':database.username,'password_encrypted':encrypt_node_secret(node,password),'port':port
     }))
     db.add(task)
     record_event(db,'server.database.create',actor,f'Queued {payload.db_type} database {payload.database_name} for server {server.id}')
@@ -640,7 +653,7 @@ def create_server_sftp(server_id: int, actor: User = Depends(get_current_user), 
     db.add(access)
     db.flush()
     task = NodeTask(node_id=node.id,server_id=server.id,action='sftp_create',payload=json.dumps({
-        'server_id':server.id,'username':username,'password':password,'port':port
+        'server_id':server.id,'username':username,'password_encrypted':encrypt_node_secret(node,password),'port':port
     }))
     db.add(task)
     record_event(db,'server.sftp.create',actor,f'Queued SFTP service for server {server.id} on port {port}')
