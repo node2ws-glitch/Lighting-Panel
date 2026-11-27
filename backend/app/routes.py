@@ -9,7 +9,7 @@ from app.audit import record_event
 from app.database import get_db
 from app.dependencies import get_current_user, require_admin
 from app.models import AuditEvent, GameServer, Node, NodeTask, User, ServerSubuser, BackupSchedule
-from app.schemas import LoginRequest, PasswordChange, MessageResponse, NodeCreate, NodeHeartbeat, NodeRead, NodeTaskResult, ServerAction, ServerCreate, ServerRead, TokenResponse, UserCreate, UserRead, ConsoleCommand, ServerFileRequest, MinecraftAction, BackupAction, VersionUpgrade, ServerMemberCreate, BackupScheduleCreate, BackupScheduleUpdate, BackupScheduleRead, ModManagerRequest
+from app.schemas import LoginRequest, PasswordChange, MessageResponse, NodeCreate, NodeHeartbeat, NodeRead, NodeTaskResult, ServerAction, ServerCreate, ServerRead, TokenResponse, UserCreate, UserRead, ConsoleCommand, ServerFileRequest, MinecraftAction, BackupAction, VersionUpgrade, ServerMemberCreate, BackupScheduleCreate, BackupScheduleUpdate, BackupScheduleRead, ModManagerRequest, ServerAllocationCreate, ServerAllocationRead
 from app.security import DUMMY_HASH, create_access_token, hash_password, verify_password
 
 router = APIRouter()
@@ -314,7 +314,7 @@ def finish_node_task(task_id: int, payload: NodeTaskResult, x_node_token: str | 
     task.status = 'failed' if payload.error else 'completed'
     task.result = json.dumps({'docker_id':payload.docker_id,'error':payload.error,'data':payload.data})
     task.completed_at = datetime.now(timezone.utc)
-    if task.server_id and task.action in ('provision','start','stop','restart','delete','version_upgrade'):
+    if task.server_id and task.action in ('provision','start','stop','restart','delete','version_upgrade','allocation_update'):
         server = db.get(GameServer, task.server_id)
         if server:
             server.docker_id = payload.docker_id or server.docker_id
@@ -328,6 +328,9 @@ def finish_node_task(task_id: int, payload: NodeTaskResult, x_node_token: str | 
             elif task.action == 'version_upgrade' and not payload.error:
                 server.version = json.loads(task.payload).get('version', server.version)
                 server.status = 'online'
+            elif task.action == 'allocation_update' and not payload.error:
+                result_data = payload.data or {}
+                server.status = result_data.get('status', 'online')
             else:
                 server.status = 'online'
     db.commit()
@@ -465,6 +468,71 @@ def minecraft_action(server_id: int, payload: MinecraftAction, actor: User = Dep
     return {'task_id':task.id,'status':task.status,'command':command}
 
 
+
+
+def queue_allocation_reconfigure(server: GameServer, node: Node, db: Session):
+    extra = db.scalars(select(ServerAllocation).where(ServerAllocation.server_id == server.id).order_by(ServerAllocation.port)).all()
+    allocations = [{'port':server.allocation_port,'container_port':25565,'protocol':'tcp'}] + [
+        {'port':item.port,'container_port':item.container_port,'protocol':item.protocol} for item in extra
+    ]
+    task = NodeTask(node_id=node.id, server_id=server.id, action='allocation_update', payload=json.dumps({
+        'server_id':server.id,'server_type':server.server_type,'version':server.version,'memory_mb':server.memory_mb,
+        'cpu_limit':server.cpu_limit,'allocations':allocations
+    }))
+    db.add(task)
+    server.status = 'starting'
+    return task
+
+@router.get('/admin/servers/{server_id}/allocations', response_model=list[ServerAllocationRead])
+def list_server_allocations(server_id: int, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    require_server_permission(server_id, actor, 'server.read', db)
+    return list(db.scalars(select(ServerAllocation).where(ServerAllocation.server_id == server_id).order_by(ServerAllocation.port)).all())
+
+@router.post('/admin/servers/{server_id}/allocations', response_model=ServerAllocationRead, status_code=status.HTTP_202_ACCEPTED)
+def create_server_allocation(server_id: int, payload: ServerAllocationCreate, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    server = require_server_permission(server_id, actor, 'server.manage', db)
+    node = db.get(Node, server.node_id)
+    if node is None or not node.is_enabled or not node_is_recent(node):
+        raise HTTPException(status_code=409, detail='Server node is offline')
+    if server.status not in ('online', 'offline'):
+        raise HTTPException(status_code=409, detail='Wait for the server to finish its current operation')
+    existing = db.scalars(select(ServerAllocation).where(ServerAllocation.server_id == server_id)).all()
+    if len(existing) >= 10:
+        raise HTTPException(status_code=409, detail='A server can have at most 10 additional allocations')
+    if payload.container_port == 25565 and payload.protocol == 'tcp':
+        raise HTTPException(status_code=409, detail='The primary Minecraft port is already mapped')
+    if any(item.container_port == payload.container_port and item.protocol == payload.protocol for item in existing):
+        raise HTTPException(status_code=409, detail='That container port and protocol are already allocated')
+    used = set(db.scalars(select(GameServer.allocation_port)).all()) | set(db.scalars(select(ServerAllocation.port)).all())
+    port = next((candidate for candidate in range(26000, 30000) if candidate not in used), None)
+    if port is None:
+        raise HTTPException(status_code=409, detail='No additional host allocations are available')
+    allocation = ServerAllocation(server_id=server_id, port=port, container_port=payload.container_port, protocol=payload.protocol)
+    db.add(allocation)
+    db.flush()
+    queue_allocation_reconfigure(server, node, db)
+    record_event(db, 'server.allocation.create', actor, f'Added host port {port} -> container {payload.container_port}/{payload.protocol} on server {server_id}')
+    db.commit()
+    db.refresh(allocation)
+    return allocation
+
+@router.delete('/admin/servers/{server_id}/allocations/{allocation_id}', status_code=status.HTTP_202_ACCEPTED)
+def delete_server_allocation(server_id: int, allocation_id: int, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    server = require_server_permission(server_id, actor, 'server.manage', db)
+    node = db.get(Node, server.node_id)
+    if node is None or not node.is_enabled or not node_is_recent(node):
+        raise HTTPException(status_code=409, detail='Server node is offline')
+    if server.status not in ('online', 'offline'):
+        raise HTTPException(status_code=409, detail='Wait for the server to finish its current operation')
+    allocation = db.scalar(select(ServerAllocation).where(ServerAllocation.id == allocation_id, ServerAllocation.server_id == server_id))
+    if allocation is None:
+        raise HTTPException(status_code=404, detail='Allocation not found')
+    db.delete(allocation)
+    db.flush()
+    queue_allocation_reconfigure(server, node, db)
+    record_event(db, 'server.allocation.delete', actor, f'Removed host port {allocation.port} from server {server_id}')
+    db.commit()
+    return {'queued':True}
 
 @router.post('/admin/servers/{server_id}/mods', status_code=status.HTTP_202_ACCEPTED)
 def manage_server_mods(server_id: int, payload: ModManagerRequest, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
