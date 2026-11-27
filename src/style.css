@@ -202,3 +202,6 @@
 .server-setting-toggle input{accent-color:#45b8f2;width:14px;height:14px}
 .server-settings-actions{display:flex;justify-content:flex-end;padding-top:13px;border-top:1px solid #263b4e}
 @media(max-width:560px){.server-settings-grid{grid-template-columns:1fr}.server-settings-grid .server-setting-wide{grid-column:auto}}
+
+/* LPGP activity log */
+.audit-page{min-height:360px}.audit-count{font-size:9px;letter-spacing:1px;color:#8bd8ff;background:#168bc91c;border:1px solid #294257;border-radius:6px;padding:7px 9px}.audit-toolbar{display:flex;gap:10px;align-items:center;margin:18px 0 8px}.audit-toolbar .search-box{flex:1}.audit-list{display:grid}.audit-event{display:flex;align-items:center;gap:13px;padding:15px 2px;border-top:1px solid #20364a}.audit-event-icon{width:32px;height:32px;border-radius:9px;background:#168bc91c;color:#8bd8ff;display:grid;place-items:center;flex:none}.audit-event-main{flex:1;min-width:0}.audit-event-main>b{font-size:11px}.audit-event-main p{margin:4px 0;color:#a9b4c5;font-size:10px}.audit-event-main small,.audit-event time{color:#77869a;font-size:9px}.audit-event time{text-align:right;max-width:190px}
