@@ -19,9 +19,17 @@ See [the LPGP migration plan](docs/LPGP-MIGRATION.md) for architecture decisions
 
 ## Current runtime boundaries
 
-The server list, deployment form and lifecycle controls use the real API and node task queue. A connected Linux node with Docker Engine and the current agent can provision Minecraft Java (Paper) containers. Provisioning is asynchronous: the node pulls the Minecraft image and reports completion to the panel.
+The server inventory, deployment form, lifecycle controls, dashboard, node fleet, customer directory, audit log, billing view and operations metrics are connected to the FastAPI API. A connected Linux node with Docker Engine and the current agent can provision Minecraft Java (Paper) containers. Provisioning is asynchronous: the node pulls the Minecraft image and reports completion to the panel.
 
-This is an early single-node runtime, not yet a production-hardened Pterodactyl replacement. The dashboard overview uses live server, node-capacity and audit API data. Host CPU is reported at node level; per-container CPU/RAM telemetry and automatic container health reconciliation are not yet implemented. Console streaming, file manager/SFTP, backups, schedules, database provisioning, multi-allocation management, per-customer permissions, billing, disk quotas, image update policy, firewall automation and token rotation remain future phases. Do not expose this deployment to untrusted tenants until the remaining isolation and operational controls are implemented.
+The server workspace includes:
+- Minecraft console commands and short-polling container logs (not WebSocket streaming).
+- A permission-checked browser file manager for list/read/write/create-folder/rename/delete and small uploads/downloads.
+- Minecraft player/whitelist/operator actions and server.properties settings.
+- Node-local create/list/restore backups and Minecraft version upgrades with pre-operation snapshots.
+- Owner-managed server team access with API-enforced per-server permissions.
+- Live node telemetry, administrative audit events, operational counters and optional Stripe customer billing.
+
+This remains an early single-node runtime, not a production-hardened Pterodactyl replacement. Per-container CPU/RAM telemetry, automatic container health reconciliation, SFTP, plugin/mod installation, schedules, database provisioning, multi-allocation management, disk quotas, image update policy, firewall automation, and node-token rotation are not implemented. Stripe is optional hosting-customer billing and never activates LPGP itself. Do not expose this deployment to untrusted tenants until the remaining isolation and operational controls are implemented.
 
 ## Phase 6 — Console and file manager
 
@@ -96,11 +104,11 @@ SECRET_KEY=local-test-secret-key-at-least-32-bytes DATABASE_URL=sqlite:///./migr
 3. API and database integration — implemented foundation.
 4. VPS node enrollment and telemetry — implemented foundation.
 5. Docker-backed Minecraft provisioning and lifecycle — implemented initial runtime.
-6. Live console, file manager and SFTP.
-7. Minecraft server configuration, versions and server properties.
-8. Backups, schedules, databases and allocations.
-9. Subusers, granular permissions and customer management.
-10. Billing, observability, rate limits, security audit and production deployment.
+6. Console and browser file manager — implemented; SFTP remains future work.
+7. Minecraft controls, version upgrades and server.properties — initial implementation present.
+8. Node-local backups — implemented; schedules, databases and allocations remain future work.
+9. Customer ownership, subusers and per-server permissions — initial implementation present.
+10. Optional Stripe billing, operational metrics, audit logs and baseline security controls — foundations present; production hardening remains.
 
 The project should only mark a phase complete after its tests and end-to-end acceptance checks pass.
 
