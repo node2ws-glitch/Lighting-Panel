@@ -448,6 +448,7 @@ def run_sftp_task(client, action, payload, server_id):
         environment={
             'SFTPGO_DEFAULT_ADMIN_USERNAME':admin_user,
             'SFTPGO_DEFAULT_ADMIN_PASSWORD':admin_password,
+            'SFTPGO_DATA_PROVIDER__CREATE_DEFAULT_ADMIN':'true',
             'SFTPGO_HTTPD__BINDINGS__0__ADDRESS':'0.0.0.0',
             'SFTPGO_HTTPD__BINDINGS__0__PORT':'8080',
             'SFTPGO_SFTPD__BINDINGS__0__ADDRESS':'0.0.0.0',
@@ -467,14 +468,14 @@ def run_sftp_task(client, action, payload, server_id):
             ip = next((item.get('IPAddress') for item in networks.values() if item.get('IPAddress')), '')
             if ip:
                 try:
-                    token_response = requests.post(f'http://{ip}:8080/api/v2/token',auth=(admin_user,admin_password),timeout=(2,4))
+                    token_response = requests.get(f'http://{ip}:8080/api/v2/token',auth=(admin_user,admin_password),timeout=(2,4))
                     if token_response.ok:
                         access_token = token_response.json().get('access_token')
                         if access_token:
                             user_response = requests.post(f'http://{ip}:8080/api/v2/users',
                                 headers={'Authorization':'Bearer '+access_token},
                                 json={'username':username,'password':password,'home_dir':'/srv/sftpgo/data',
-                                      'permissions':['*'],'status':1,'uid':1000,'gid':1000},
+                                      'permissions':{'/':['*']},'status':1,'uid':1000,'gid':1000},
                                 timeout=(3,10))
                             user_response.raise_for_status()
                             return {'data':{'status':'active','port':port,'username':username}}
