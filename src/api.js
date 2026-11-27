@@ -74,3 +74,7 @@ export const deleteServerAllocation = (id, allocationId) => request('/admin/serv
 export const listApiKeys = () => request('/auth/api-keys');
 export const createApiKey = (payload) => request('/auth/api-keys', { method: 'POST', body: JSON.stringify(payload) });
 export const revokeApiKey = (id) => request('/auth/api-keys/' + id, { method: 'DELETE' });
+
+export const getServerSftp = (id) => request('/admin/servers/' + id + '/sftp');
+export const createServerSftp = (id) => request('/admin/servers/' + id + '/sftp', { method: 'POST' });
+export const deleteServerSftp = (id) => request('/admin/servers/' + id + '/sftp', { method: 'DELETE' });
