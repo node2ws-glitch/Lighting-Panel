@@ -469,6 +469,12 @@ def run_sftp_task(client, action, payload, server_id):
                 volume.remove(force=False)
         except docker.errors.NotFound:
             pass
+        try:
+            network = client.networks.get(f'lighting-sftp-net-{server_id}')
+            if network.attrs.get('Labels',{}).get(LABEL_OWNER) == 'true' and network.attrs.get('Labels',{}).get('net.lightingpanel.sftp-server-id') == str(server_id):
+                network.remove()
+        except docker.errors.NotFound:
+            pass
         return {'data':{'status':'removed'}}
     if action != 'sftp_create':
         raise ValueError('Unsupported SFTP operation')
