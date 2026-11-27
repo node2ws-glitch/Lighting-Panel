@@ -219,6 +219,19 @@ def restore_server_backup(client, server_id, container, mountpoint, backup_id):
         container.start()
     return {'restored_backup':backup_id,'previous_state':'running' if was_running else 'stopped'}
 
+
+def ensure_server_network(client, server_id):
+    name = f'lighting-server-net-{int(server_id)}'
+    try:
+        network = client.networks.get(name)
+    except docker.errors.NotFound:
+        network = client.networks.create(name, driver='bridge',
+            labels={LABEL_OWNER:'true','net.lightingpanel.server-id':str(server_id)})
+    labels = network.attrs.get('Labels', {}) or {}
+    if labels.get(LABEL_OWNER) != 'true' or labels.get('net.lightingpanel.server-id') != str(server_id):
+        raise RuntimeError('Server network ownership validation failed')
+    return network
+
 def create_minecraft_container(client, server_id, version, memory_mb, cpu_limit, port, server_type='paper', extra_allocations=None):
     ports = {'25565/tcp': ('0.0.0.0', int(port))}
     for item in extra_allocations or []:
@@ -229,7 +242,7 @@ def create_minecraft_container(client, server_id, version, memory_mb, cpu_limit,
         if key in ports:
             raise ValueError('Duplicate container port and protocol')
         ports[key] = ('0.0.0.0', host_port)
-    return client.containers.run(
+    container = client.containers.run(
         IMAGE, name=container_name(server_id), detach=True,
         environment={'EULA':'TRUE','TYPE':str(server_type).upper(),'VERSION':version,'MEMORY':f'{int(memory_mb * 0.8)}M','TZ':'UTC'},
         ports=ports,
@@ -239,6 +252,9 @@ def create_minecraft_container(client, server_id, version, memory_mb, cpu_limit,
         labels={LABEL_OWNER:'true','net.lightingpanel.server-id':str(server_id)},
         restart_policy={'Name':'unless-stopped'}, cap_drop=['NET_RAW','SYS_CHROOT','MKNOD'],
         security_opt=['no-new-privileges:true'])
+    network = ensure_server_network(client, server_id)
+    network.connect(container, aliases=[f'lighting-server-{server_id}'])
+    return container
 
 def upgrade_minecraft_server(client, server_id, container, payload):
     version = str(payload.get('version',''))
@@ -490,6 +506,64 @@ def run_sftp_task(client, action, payload, server_id):
             pass
         raise
 
+
+def run_database_task(client, action, payload, server_id, server_container):
+    database_id = int(payload.get('database_id', 0))
+    if database_id <= 0:
+        raise ValueError('Database task has no valid database id')
+    name = f'lighting-db-{database_id}'
+    volume_name = f'lighting-db-data-{database_id}'
+    network = ensure_server_network(client, server_id)
+    server_container.reload()
+    connected = server_container.attrs.get('NetworkSettings',{}).get('Networks',{}) or {}
+    if network.name not in connected:
+        network.connect(server_container, aliases=[f'lighting-server-{server_id}'])
+    if action == 'database_delete':
+        try:
+            container = client.containers.get(name)
+            if container.labels.get(LABEL_OWNER) != 'true' or container.labels.get('net.lightingpanel.database-id') != str(database_id):
+                raise RuntimeError('Refusing to remove an unmanaged database container')
+            container.remove(force=True)
+        except docker.errors.NotFound:
+            pass
+        try:
+            volume = client.volumes.get(volume_name)
+            if volume.attrs.get('Labels',{}).get(LABEL_OWNER) == 'true' and volume.attrs.get('Labels',{}).get('net.lightingpanel.database-id') == str(database_id):
+                volume.remove(force=False)
+        except docker.errors.NotFound:
+            pass
+        return {'data':{'status':'removed'}}
+    db_type = str(payload.get('db_type',''))
+    database_name = str(payload.get('database_name',''))
+    username = str(payload.get('username',''))
+    password = str(payload.get('password',''))
+    port = int(payload.get('port',0))
+    if db_type not in ('mariadb','postgres') or not __import__('re').fullmatch(r'[A-Za-z][A-Za-z0-9_]{2,47}',database_name) or not __import__('re').fullmatch(r'[A-Za-z][A-Za-z0-9_]{2,31}',username):
+        raise ValueError('Database type, name, or username is invalid')
+    if not 32000 <= port <= 32999 or len(password) < 40:
+        raise ValueError('Database port or password is invalid')
+    try:
+        existing = client.containers.get(name)
+        if existing.labels.get(LABEL_OWNER) != 'true' or existing.labels.get('net.lightingpanel.database-id') != str(database_id):
+            raise RuntimeError('Database container name collision; refusing to modify an unmanaged container')
+        return {'data':{'status':'active','internal_host':name,'internal_port':3306 if db_type == 'mariadb' else 5432}}
+    except docker.errors.NotFound:
+        pass
+    client.volumes.create(name=volume_name,labels={LABEL_OWNER:'true','net.lightingpanel.database-id':str(database_id)})
+    env = {'MARIADB_DATABASE':database_name,'MARIADB_USER':username,'MARIADB_PASSWORD':password,'MARIADB_ROOT_PASSWORD':secrets.token_urlsafe(36)} if db_type == 'mariadb' else {'POSTGRES_DB':database_name,'POSTGRES_USER':username,'POSTGRES_PASSWORD':password}
+    image = 'mariadb:11.4' if db_type == 'mariadb' else 'postgres:16-alpine'
+    internal_port = 3306 if db_type == 'mariadb' else 5432
+    container = client.containers.run(
+        image,name=name,detach=True,environment=env,
+        ports={f'{internal_port}/tcp':('0.0.0.0',port)},
+        volumes={volume_name:{'bind':'/var/lib/mysql' if db_type == 'mariadb' else '/var/lib/postgresql/data','mode':'rw'}},
+        network=network.name,mem_limit='768m',nano_cpus=500000000,pids_limit=256,
+        labels={LABEL_OWNER:'true','net.lightingpanel.database-id':str(database_id),'net.lightingpanel.server-id':str(server_id)},
+        restart_policy={'Name':'unless-stopped'},cap_drop=['NET_RAW','SYS_CHROOT','MKNOD'],
+        security_opt=['no-new-privileges:true'])
+    network.connect(container,aliases=[name])
+    return {'data':{'status':'active','internal_host':name,'internal_port':internal_port,'docker_id':container.id}}
+
 def run_task(client, task):
     action = task.get('action')
     payload = task.get('payload') or {}
@@ -520,24 +594,7 @@ def run_task(client, task):
             pass
         volume = f'lighting-server-data-{server_id}'
         client.volumes.create(name=volume, labels={LABEL_OWNER:'true','net.lightingpanel.server-id':str(server_id)})
-        container = client.containers.run(
-            IMAGE,
-            name=name,
-            detach=True,
-            environment={'EULA':'TRUE','TYPE':server_type.upper(),'VERSION':version,'MEMORY':f'{int(memory_mb * 0.8)}M','TZ':'UTC'},
-            ports={'25565/tcp':('0.0.0.0',port)},
-            volumes={volume:{'bind':'/data','mode':'rw'}},
-            mem_limit=f'{memory_mb}m',
-            nano_cpus=int(cpu_limit * 1_000_000_000),
-            pids_limit=512,
-            init=True,
-            tty=True,
-            stdin_open=True,
-            labels={LABEL_OWNER:'true','net.lightingpanel.server-id':str(server_id)},
-            restart_policy={'Name':'unless-stopped'},
-            cap_drop=['NET_RAW','SYS_CHROOT','MKNOD'],
-            security_opt=['no-new-privileges:true'],
-        )
+        container = create_minecraft_container(client, server_id, version, memory_mb, cpu_limit, port, server_type)
         return {'docker_id':container.id}
     try:
         container = client.containers.get(name)
@@ -555,6 +612,8 @@ def run_task(client, task):
         raise RuntimeError('Refusing to operate on a container not owned by Lighting Panel')
     if action in ('sftp_create','sftp_delete'):
         return run_sftp_task(client, action, payload, server_id)
+    if action in ('database_create','database_delete'):
+        return run_database_task(client, action, payload, server_id, container)
     if action == 'allocation_update':
         return reconfigure_server_allocations(client, server_id, container, payload)
     if action == 'mod_manager':
