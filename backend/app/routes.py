@@ -121,6 +121,17 @@ def node_heartbeat(payload: NodeHeartbeat, x_node_token: str | None = Header(def
     db.refresh(node)
     return node
 
+@router.post('/admin/nodes/{node_id}/token')
+def rotate_node_token(node_id: int, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    node = db.get(Node, node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail='Node not found')
+    token = secrets.token_urlsafe(48)
+    node.token_hash = hashlib.sha256(token.encode()).hexdigest()
+    record_event(db, 'admin.node.token.rotate', actor, f'Rotated enrollment credential for node {node.name}')
+    db.commit()
+    return {'token': token, 'node_id': node.id, 'node_name': node.name}
+
 @router.patch('/admin/nodes/{node_id}/status', response_model=NodeRead)
 def set_node_status(node_id: int, is_enabled: bool, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
     node = db.get(Node, node_id)
