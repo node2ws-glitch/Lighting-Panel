@@ -162,3 +162,6 @@ Set `ENVIRONMENT=production`, a unique `SECRET_KEY`, exact `CORS_ORIGINS`, and c
 - **Plugin and mod management:** Paper plugin JARs and Fabric/Forge mod JARs can be listed, installed, and removed. Installs accept direct HTTPS JAR URLs only from an explicit Modrinth, Hangar, or CurseForge CDN allowlist, enforce download/archive limits, verify expected JAR metadata, and stop/restart the server around file changes. This is not a malware scanner; only install files from sources you trust.
 
 SFTP service exposure, database container provisioning, multi-allocation lifecycle management, API-key management, remote backup storage, and production multi-tenant hardening remain separate work items. Do not expose the panel as a public multi-customer service until those deployment controls and a real VPS acceptance test are complete.
+
+
+- **Multi-allocation support:** each server can have up to 10 additional TCP/UDP host-to-container port mappings. Updating mappings queues a node task which safely recreates the managed container while retaining its persistent data volume. Extra container ports must be used by a plugin or service configured to listen on those ports; adding a mapping alone does not make Minecraft listen on it.
