@@ -78,3 +78,7 @@ export const revokeApiKey = (id) => request('/auth/api-keys/' + id, { method: 'D
 export const getServerSftp = (id) => request('/admin/servers/' + id + '/sftp');
 export const createServerSftp = (id) => request('/admin/servers/' + id + '/sftp', { method: 'POST' });
 export const deleteServerSftp = (id) => request('/admin/servers/' + id + '/sftp', { method: 'DELETE' });
+
+export const listServerDatabases = (id) => request('/admin/servers/' + id + '/databases');
+export const createServerDatabase = (id, payload) => request('/admin/servers/' + id + '/databases', { method: 'POST', body: JSON.stringify(payload) });
+export const deleteServerDatabase = (id, databaseId) => request('/admin/servers/' + id + '/databases/' + databaseId, { method: 'DELETE' });
