@@ -550,7 +550,7 @@ def list_server_databases(server_id: int, actor: User = Depends(get_current_user
     rows = db.scalars(select(DatabaseService).where(DatabaseService.server_id == server_id).order_by(DatabaseService.created_at.desc())).all()
     return [{'id':item.id,'server_id':item.server_id,'db_type':item.db_type,'database_name':item.database_name,
         'username':item.username,'host':node.fqdn if node else 'Unavailable',
-        'internal_host':f'lpgp-db-{item.id}','port':item.port,'internal_port':3306 if item.db_type == 'mariadb' else 5432,
+        'internal_host':f'lighting-db-{item.id}','port':item.port,'internal_port':3306 if item.db_type == 'mariadb' else 5432,
         'status':item.status,'created_at':item.created_at} for item in rows]
 
 @router.post('/admin/servers/{server_id}/databases', status_code=status.HTTP_202_ACCEPTED)
@@ -585,7 +585,7 @@ def create_server_database(server_id: int, payload: DatabaseCreate, actor: User 
     db.refresh(database)
     return {'task_id':task.id,'status':task.status,'password':password,'database':{
         'id':database.id,'server_id':server.id,'db_type':database.db_type,'database_name':database.database_name,
-        'username':database.username,'host':node.fqdn,'internal_host':f'lpgp-db-{database.id}',
+        'username':database.username,'host':node.fqdn,'internal_host':f'lighting-db-{database.id}',
         'port':database.port,'internal_port':3306 if database.db_type == 'mariadb' else 5432,'status':database.status,
         'created_at':database.created_at}}
 
