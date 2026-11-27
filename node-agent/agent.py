@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import docker
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import psutil
 import requests
 
@@ -422,6 +423,19 @@ def reconfigure_server_allocations(client, server_id, container, payload):
         raise
 
 
+
+def decrypt_node_secret(payload):
+    encoded = str(payload.get('password_encrypted') or '')
+    token = os.getenv('NODE_TOKEN', '')
+    if len(token) < 32 or not encoded:
+        raise RuntimeError('Encrypted node task credential is missing')
+    try:
+        raw = base64.urlsafe_b64decode(encoded.encode('ascii'))
+        key = __import__('hashlib').sha256(token.encode('utf-8')).digest()
+        return AESGCM(key).decrypt(raw[:12], raw[12:], None).decode('utf-8')
+    except Exception as exc:
+        raise RuntimeError('Could not decrypt the node task credential; check node token synchronization') from exc
+
 def run_sftp_task(client, action, payload, server_id):
     server_volume(client, server_id)
     name = f'lighting-sftp-{int(server_id)}'
@@ -445,7 +459,7 @@ def run_sftp_task(client, action, payload, server_id):
         raise ValueError('Unsupported SFTP operation')
     port = int(payload.get('port',0))
     username = str(payload.get('username',''))
-    password = str(payload.get('password',''))
+    password = decrypt_node_secret(payload)
     if not 31000 <= port <= 31999 or not __import__('re').fullmatch(r'lpgp[0-9]{1,10}',username) or len(password) < 32:
         raise ValueError('SFTP provisioning parameters are invalid')
     try:
@@ -535,7 +549,7 @@ def run_database_task(client, action, payload, server_id, server_container):
     db_type = str(payload.get('db_type',''))
     database_name = str(payload.get('database_name',''))
     username = str(payload.get('username',''))
-    password = str(payload.get('password',''))
+    password = decrypt_node_secret(payload)
     port = int(payload.get('port',0))
     if db_type not in ('mariadb','postgres') or not __import__('re').fullmatch(r'[A-Za-z][A-Za-z0-9_]{2,47}',database_name) or not __import__('re').fullmatch(r'[A-Za-z][A-Za-z0-9_]{2,31}',username):
         raise ValueError('Database type, name, or username is invalid')
