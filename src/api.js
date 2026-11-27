@@ -59,3 +59,8 @@ export const getBillingSummary = () => request('/billing/me');
 export const startBillingCheckout = () => request('/billing/checkout', { method: 'POST' });
 export const openBillingPortal = () => request('/billing/portal', { method: 'POST' });
 export const getOperationalMetrics = () => request('/admin/metrics');
+
+export const listBackupSchedules = (id) => request('/admin/servers/' + id + '/backup-schedules');
+export const createBackupSchedule = (id, payload) => request('/admin/servers/' + id + '/backup-schedules', { method: 'POST', body: JSON.stringify(payload) });
+export const updateBackupSchedule = (id, scheduleId, payload) => request('/admin/servers/' + id + '/backup-schedules/' + scheduleId, { method: 'PATCH', body: JSON.stringify(payload) });
+export const deleteBackupSchedule = (id, scheduleId) => request('/admin/servers/' + id + '/backup-schedules/' + scheduleId, { method: 'DELETE' });
