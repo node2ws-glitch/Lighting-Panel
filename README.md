@@ -153,3 +153,12 @@ The project should only mark a phase complete after its tests and end-to-end acc
 
 ### Phase 10 deployment settings
 Set `ENVIRONMENT=production`, a unique `SECRET_KEY`, exact `CORS_ORIGINS`, and comma-separated `ALLOWED_HOSTS`. Set `FRONTEND_URL` to the HTTPS panel origin. Billing remains unavailable until all three Stripe settings are configured.
+
+
+## Additional server management features
+
+- **Scheduled backups:** administrators and server owners can schedule hourly, daily, or weekly node-local snapshots with a configurable retention count. The node agent dispatches due jobs through the authenticated task queue and prunes older scheduled snapshots. Backups remain on the VPS and should be copied to independent storage for disaster recovery.
+- **Paper, Fabric, and Forge runtimes:** new servers can select one of these itzg Minecraft server types. Existing servers are migrated as Paper by default.
+- **Plugin and mod management:** Paper plugin JARs and Fabric/Forge mod JARs can be listed, installed, and removed. Installs accept direct HTTPS JAR URLs only from an explicit Modrinth, Hangar, or CurseForge CDN allowlist, enforce download/archive limits, verify expected JAR metadata, and stop/restart the server around file changes. This is not a malware scanner; only install files from sources you trust.
+
+SFTP service exposure, database container provisioning, multi-allocation lifecycle management, API-key management, remote backup storage, and production multi-tenant hardening remain separate work items. Do not expose the panel as a public multi-customer service until those deployment controls and a real VPS acceptance test are complete.
