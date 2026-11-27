@@ -293,3 +293,24 @@ def test_stripe_webhook_signature_and_event_idempotency(monkeypatch):
     assert second.status_code==200 and second.json()['duplicate'] is True
     invalid=client.post('/api/v1/billing/webhook',content=payload,headers={'Stripe-Signature':'t=1,v1=bad'})
     assert invalid.status_code==400
+
+def test_authenticated_user_can_change_password_and_wrong_current_password_is_rejected():
+    login = client.post('/api/v1/auth/login', json={'email':'admin@example.com','password':'Correct-Horse-123!'}).json()
+    headers = {'Authorization':f"Bearer {login['access_token']}"}
+    wrong = client.post('/api/v1/auth/password', headers=headers, json={
+        'current_password':'incorrect','new_password':'New-Correct-Horse-456!'
+    })
+    assert wrong.status_code == 400
+    changed = client.post('/api/v1/auth/password', headers=headers, json={
+        'current_password':'Correct-Horse-123!','new_password':'New-Correct-Horse-456!'
+    })
+    assert changed.status_code == 200
+    assert client.post('/api/v1/auth/login', json={
+        'email':'admin@example.com','password':'Correct-Horse-123!'
+    }).status_code == 401
+    assert client.post('/api/v1/auth/login', json={
+        'email':'admin@example.com','password':'New-Correct-Horse-456!'
+    }).status_code == 200
+    assert client.post('/api/v1/auth/password', headers=headers, json={
+        'current_password':'New-Correct-Horse-456!','new_password':'short'
+    }).status_code == 422
