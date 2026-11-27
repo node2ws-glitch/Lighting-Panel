@@ -219,11 +219,20 @@ def restore_server_backup(client, server_id, container, mountpoint, backup_id):
         container.start()
     return {'restored_backup':backup_id,'previous_state':'running' if was_running else 'stopped'}
 
-def create_minecraft_container(client, server_id, version, memory_mb, cpu_limit, port, server_type='paper'):
+def create_minecraft_container(client, server_id, version, memory_mb, cpu_limit, port, server_type='paper', extra_allocations=None):
+    ports = {'25565/tcp': ('0.0.0.0', int(port))}
+    for item in extra_allocations or []:
+        container_port = int(item.get('container_port', 0)); host_port = int(item.get('port', 0)); protocol = str(item.get('protocol', 'tcp'))
+        if not 1024 <= container_port <= 65535 or not 1024 <= host_port <= 65535 or protocol not in ('tcp', 'udp'):
+            raise ValueError('Additional allocation is invalid')
+        key = f'{container_port}/{protocol}'
+        if key in ports:
+            raise ValueError('Duplicate container port and protocol')
+        ports[key] = ('0.0.0.0', host_port)
     return client.containers.run(
         IMAGE, name=container_name(server_id), detach=True,
         environment={'EULA':'TRUE','TYPE':str(server_type).upper(),'VERSION':version,'MEMORY':f'{int(memory_mb * 0.8)}M','TZ':'UTC'},
-        ports={'25565/tcp':('0.0.0.0',int(port))},
+        ports=ports,
         volumes={f'lighting-server-data-{server_id}':{'bind':'/data','mode':'rw'}},
         mem_limit=f'{int(memory_mb)}m', nano_cpus=int(float(cpu_limit)*1_000_000_000),
         pids_limit=512, init=True, tty=True, stdin_open=True,
@@ -373,6 +382,30 @@ def run_mod_manager(client, server_id, container, payload):
         if was_running:
             container.start()
 
+
+def reconfigure_server_allocations(client, server_id, container, payload):
+    allocations = payload.get('allocations') or []
+    primary = next((item for item in allocations if int(item.get('container_port', 0)) == 25565 and item.get('protocol') == 'tcp'), None)
+    if primary is None or int(primary.get('port', 0)) != int(payload.get('primary_port', primary.get('port', 0))):
+        if primary is None:
+            raise ValueError('Primary Minecraft allocation is missing')
+    extra = [item for item in allocations if item is not primary]
+    if len(extra) > 10:
+        raise ValueError('Too many additional allocations')
+    _, mountpoint = server_volume(client, server_id)
+    was_running = container.status == 'running'
+    if was_running:
+        container.stop(timeout=30)
+    try:
+        container.remove(v=False)
+        replacement = create_minecraft_container(client, server_id, str(payload.get('version','LATEST')),
+            int(payload.get('memory_mb',1024)), float(payload.get('cpu_limit',1)),
+            int(primary['port']), str(payload.get('server_type','paper')), extra)
+        return {'docker_id':replacement.id,'data':{'status':'online','allocations':len(allocations)}}
+    except Exception:
+        log.exception('Allocation reconfiguration failed for server %s', server_id)
+        raise
+
 def run_task(client, task):
     action = task.get('action')
     payload = task.get('payload') or {}
@@ -436,6 +469,8 @@ def run_task(client, task):
         raise RuntimeError('Managed server container does not exist')
     if container.labels.get(LABEL_OWNER) != 'true' or container.labels.get('net.lightingpanel.server-id') != str(server_id):
         raise RuntimeError('Refusing to operate on a container not owned by Lighting Panel')
+    if action == 'allocation_update':
+        return reconfigure_server_allocations(client, server_id, container, payload)
     if action == 'mod_manager':
         return {'data':run_mod_manager(client, server_id, container, payload)}
     if action in ('backup_create','backup_list','backup_restore'):
