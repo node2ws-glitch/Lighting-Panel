@@ -23,6 +23,8 @@ def _stripe_ready(settings, require_price=True):
 
 @router.post('/checkout')
 def create_checkout(request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if getattr(user, '_api_key_read_only', False):
+        raise HTTPException(status_code=403, detail='Read-only API keys cannot start billing sessions')
     settings = _stripe_ready(get_settings())
     existing = db.scalar(select(BillingSubscription).where(BillingSubscription.user_id == user.id))
     if existing and existing.status in ('active','trialing','past_due','unpaid'):
@@ -57,6 +59,8 @@ def create_checkout(request: Request, user: User = Depends(get_current_user), db
 
 @router.post('/portal')
 def create_portal(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if getattr(user, '_api_key_read_only', False):
+        raise HTTPException(status_code=403, detail='Read-only API keys cannot create billing portal sessions')
     settings=_stripe_ready(get_settings(), require_price=False)
     subscription=db.scalar(select(BillingSubscription).where(BillingSubscription.user_id==user.id))
     if not subscription or not subscription.stripe_customer_id:
