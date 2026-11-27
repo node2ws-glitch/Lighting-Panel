@@ -195,3 +195,17 @@ class ServerAllocationRead(BaseModel):
     container_port: int
     protocol: str
     created_at: datetime
+
+
+class ApiKeyCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=80, pattern=r'^[a-zA-Z0-9 _.-]+$')
+    expires_days: int | None = Field(default=90, ge=1, le=365)
+
+class ApiKeyRead(BaseModel):
+    id: int
+    name: str
+    prefix: str
+    created_at: datetime
+    last_used_at: datetime | None
+    expires_at: datetime | None
+    revoked_at: datetime | None
