@@ -327,3 +327,36 @@ def test_admin_can_rotate_node_token_and_old_token_is_rejected():
     assert client.post('/api/v1/nodes/heartbeat', headers={'X-Node-Token':old_token}, json=heartbeat).status_code == 401
     assert client.post('/api/v1/nodes/heartbeat', headers={'X-Node-Token':new_token}, json=heartbeat).status_code == 200
     assert client.post(f"/api/v1/admin/nodes/{enrolled['node']['id']}/token").status_code == 401
+
+
+def test_backup_schedule_creation_and_due_dispatch():
+    from datetime import datetime, timedelta, timezone
+    from app.models import BackupSchedule, GameServer
+    login = client.post('/api/v1/auth/login', json={'email':'admin@example.com','password':'Correct-Horse-123!'}).json()
+    admin = {'Authorization':f"Bearer {login['access_token']}"}
+    enrolled = client.post('/api/v1/admin/nodes', headers=admin, json={'name':'scheduled-backup-node','fqdn':'scheduled.example.test'}).json()
+    node_headers = {'X-Node-Token':enrolled['token']}
+    client.post('/api/v1/nodes/heartbeat', headers=node_headers, json={
+        'cpu_percent':1,'memory_total':8*1024**3,'memory_used':1024**3,'disk_total':80*1024**3,'disk_used':5*1024**3
+    })
+    created = client.post('/api/v1/admin/servers', headers=admin, json={
+        'name':'Scheduled SMP','node_id':enrolled['node']['id'],'memory_mb':1024,'cpu_limit':1
+    }).json()
+    provision = client.get('/api/v1/nodes/tasks', headers=node_headers).json()[0]
+    client.post(f"/api/v1/nodes/tasks/{provision['id']}/result", headers=node_headers, json={'docker_id':'docker-scheduled'})
+    sid = created['id']
+    schedule = client.post(f'/api/v1/admin/servers/{sid}/backup-schedules', headers=admin, json={
+        'name':'Nightly world backup','frequency':'daily','retention':5,'enabled':True
+    })
+    assert schedule.status_code == 201, schedule.text
+    assert schedule.json()['retention'] == 5
+    with TestingSession() as db:
+        row = db.get(BackupSchedule, schedule.json()['id'])
+        row.next_run_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        db.commit()
+    queued = client.get('/api/v1/nodes/tasks', headers=node_headers)
+    assert queued.status_code == 200
+    scheduled = next(task for task in queued.json() if task['action'] == 'backup_create')
+    assert scheduled['payload']['label'] == 'scheduled'
+    assert scheduled['payload']['retention'] == 5
+    assert client.delete(f"/api/v1/admin/servers/{sid}/backup-schedules/{schedule.json()['id']}", headers=admin).status_code == 204
