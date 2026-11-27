@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.audit import record_event
 from app.database import get_db
 from app.dependencies import get_current_user, require_admin
-from app.models import AuditEvent, GameServer, Node, NodeTask, User, ServerSubuser, BackupSchedule
+from app.models import AuditEvent, GameServer, Node, NodeTask, User, ServerSubuser, BackupSchedule, ServerAllocation, ApiKey
 from app.schemas import LoginRequest, PasswordChange, MessageResponse, NodeCreate, NodeHeartbeat, NodeRead, NodeTaskResult, ServerAction, ServerCreate, ServerRead, TokenResponse, UserCreate, UserRead, ConsoleCommand, ServerFileRequest, MinecraftAction, BackupAction, VersionUpgrade, ServerMemberCreate, BackupScheduleCreate, BackupScheduleUpdate, BackupScheduleRead, ModManagerRequest, ServerAllocationCreate, ServerAllocationRead, ApiKeyCreate, ApiKeyRead
 from app.security import DUMMY_HASH, create_access_token, hash_password, verify_password
 
