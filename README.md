@@ -169,3 +169,6 @@ SFTP service exposure, database container provisioning, multi-allocation lifecyc
 
 - **Per-server SFTP:** an isolated SFTPGo container is provisioned for each server, mounting only that server's managed data volume. The panel creates a one-time password, stores only its hash in the SFTP access record, and exposes a dedicated TCP port. Operators must allow the assigned SFTP port range (31000–31999) in their VPS firewall. The SFTPGo admin API is not published on the host.
 - **Personal API keys:** non-admin accounts can create, list, and revoke expiring read-only API keys. Tokens are hashed in the panel database, shown once, and cannot perform server control or administrative actions. Administrator API keys are intentionally disabled.
+
+
+- **Managed databases:** up to three MariaDB or PostgreSQL containers per server, each with a persistent Docker volume, unique host port, and a dedicated per-server Docker bridge network shared with the Minecraft container. The panel returns the generated database password once and stores only its hash in the database-service record. External DB access is exposed on the assigned node port; firewall allowlisting is strongly recommended. The internal database hostname is available to processes in the server's private Docker network.
