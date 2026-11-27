@@ -20,6 +20,7 @@ export async function login(email, password) {
   sessionStorage.setItem(TOKEN_KEY, data.access_token);
   return data.user;
 }
+export const changePassword = (payload) => request('/auth/password', { method: 'POST', body: JSON.stringify(payload) });
 export const currentUser = () => request('/auth/me');
 export const logout = async () => { try { await request('/auth/logout', { method: 'POST' }); } finally { clearToken(); } };
 export const listUsers = () => request('/admin/users');
@@ -31,6 +32,7 @@ export const apiHealth = () => request('/health');
 export const listNodes = () => request('/admin/nodes');
 export const createNode = (payload) => request('/admin/nodes', { method: 'POST', body: JSON.stringify(payload) });
 export const setNodeStatus = (id, enabled) => request('/admin/nodes/' + id + '/status?is_enabled=' + enabled, { method: 'PATCH' });
+export const rotateNodeToken = (id) => request('/admin/nodes/' + id + '/token', { method: 'POST' });
 
 export const listServers = () => request('/admin/servers');
 export const createGameServer = (payload) => request('/admin/servers', { method: 'POST', body: JSON.stringify(payload) });

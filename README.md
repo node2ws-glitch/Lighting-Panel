@@ -1,12 +1,16 @@
-# Lighting Panel
+# LPGP — LightingPlays Game Panel
 
-Lighting Panel is an independent game-server hosting control plane with a dark, electric visual identity. It is inspired by common hosting-panel workflows; it does not copy Pterodactyl source code or assets.
+LPGP (LightingPlays Game Panel) is a free game-server management panel made by LightingPlays. The interface migration uses JTG Panel as its visual reference while retaining LPGP's FastAPI, PostgreSQL, Docker and VPS node-agent runtime. LPGP does not require a paid product licence, activation code, or licence-server connection.
+
+**Made by LightingPlays. Free panel software for everyone.**
+
+See [the LPGP migration plan](docs/LPGP-MIGRATION.md) for architecture decisions and release phases.
 
 ## Implemented foundations
 
 - Responsive React/Vite panel with animated dark UI and protected sign-in.
 - FastAPI backend with PostgreSQL, SQLAlchemy and Alembic migrations.
-- Argon2 password hashing, short-lived JWT authentication, administrator roles and audit events.
+- Argon2 password hashing, short-lived JWT authentication, administrator roles, audit events, and authenticated password changes with current-password verification.
 - VPS node enrollment, one-time node credentials and authenticated CPU/RAM/disk telemetry.
 - Docker-backed Minecraft Java provisioning through the node agent.
 - Persistent per-server Docker volumes, dedicated TCP allocations, CPU/RAM limits and queued start/stop/restart/delete operations.
@@ -15,9 +19,18 @@ Lighting Panel is an independent game-server hosting control plane with a dark, 
 
 ## Current runtime boundaries
 
-The server list, deployment form and lifecycle controls use the real API and node task queue. A connected Linux node with Docker Engine and the current agent can provision Minecraft Java (Paper) containers. Provisioning is asynchronous: the node pulls the Minecraft image and reports completion to the panel.
+The server inventory, deployment form, lifecycle controls, dashboard, node fleet, customer directory, audit log, billing view and operations metrics are connected to the FastAPI API. A connected Linux node with Docker Engine and the current agent can provision Minecraft Java (Paper) containers. Provisioning is asynchronous: the node pulls the Minecraft image and reports completion to the panel.
 
-This is an early single-node runtime, not yet a production-hardened Pterodactyl replacement. The dashboard overview uses live server, node-capacity and audit API data. Host CPU is reported at node level; per-container CPU/RAM telemetry and automatic container health reconciliation are not yet implemented. Console streaming, file manager/SFTP, backups, schedules, database provisioning, multi-allocation management, per-customer permissions, billing, disk quotas, image update policy, firewall automation and token rotation remain future phases. Do not expose this deployment to untrusted tenants until the remaining isolation and operational controls are implemented.
+The server workspace includes:
+- Minecraft console commands and short-polling container logs (not WebSocket streaming).
+- A permission-checked browser file manager for list/read/write/create-folder/rename/delete and small uploads/downloads.
+- Minecraft player/whitelist/operator actions and server.properties settings.
+- Node-local create/list/restore backups and Minecraft version upgrades with pre-operation snapshots.
+- Owner-managed server team access with API-enforced per-server permissions.
+- Live node telemetry, administrative audit events, an activity-backed notification drawer, operational counters and optional Stripe customer billing.
+- Authenticated account password changes and administrator-only node credential rotation with one-time token display.
+
+This remains an early single-node runtime, not a production-hardened Pterodactyl replacement. Per-container CPU/RAM telemetry, automatic container health reconciliation, SFTP, plugin/mod installation, schedules, database provisioning, multi-allocation management, disk quotas, image update policy, firewall automation are not implemented. Node credentials can be rotated by an administrator; the new token is shown once and must be installed on the VPS agent before it reconnects. Stripe is optional hosting-customer billing and never activates LPGP itself. Do not expose this deployment to untrusted tenants until the remaining isolation and operational controls are implemented.
 
 ## Phase 6 — Console and file manager
 
@@ -92,11 +105,11 @@ SECRET_KEY=local-test-secret-key-at-least-32-bytes DATABASE_URL=sqlite:///./migr
 3. API and database integration — implemented foundation.
 4. VPS node enrollment and telemetry — implemented foundation.
 5. Docker-backed Minecraft provisioning and lifecycle — implemented initial runtime.
-6. Live console, file manager and SFTP.
-7. Minecraft server configuration, versions and server properties.
-8. Backups, schedules, databases and allocations.
-9. Subusers, granular permissions and customer management.
-10. Billing, observability, rate limits, security audit and production deployment.
+6. Console and browser file manager — implemented; SFTP remains future work.
+7. Minecraft controls, version upgrades and server.properties — initial implementation present.
+8. Node-local backups — implemented; schedules, databases and allocations remain future work.
+9. Customer ownership, subusers and per-server permissions — initial implementation present.
+10. Optional Stripe billing, operational metrics, audit logs and baseline security controls — foundations present; production hardening remains.
 
 The project should only mark a phase complete after its tests and end-to-end acceptance checks pass.
 
@@ -113,7 +126,7 @@ The project should only mark a phase complete after its tests and end-to-end acc
 ## Phase 9 — customer ownership and server team permissions
 
 - Administrators can deploy a server for an existing active customer account by supplying that account's email as the optional owner email. Customers can see only servers they own or that have been shared with them.
-- Server owners can grant an existing non-admin account access to one server. No invitation email is sent; the recipient must already have an active Lighting Panel account.
+- Server owners can grant an existing non-admin account access to one server. No invitation email is sent; the recipient must already have an active LPGP account.
 - Every membership receives `server.read` plus only the selected grants: console, start/stop/restart, file read/write, backup read/create/restore, and Minecraft management/version upgrades.
 - Server-specific API routes check the required permission on every request. Panel administrator accounts retain administrative access. Team members cannot manage membership, access VPS node administration, create servers, or delete the owner's server.
 - Owners can list and revoke team memberships. Grants are stored in a dedicated `server_subusers` table with a unique server/user pair and foreign-key cleanup.

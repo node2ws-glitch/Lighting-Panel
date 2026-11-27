@@ -1,8 +1,9 @@
 {
-  "name": "lighting-panel",
+  "name": "lpgp-panel",
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "description": "LPGP — free game server panel made by LightingPlays",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",

@@ -293,3 +293,37 @@ def test_stripe_webhook_signature_and_event_idempotency(monkeypatch):
     assert second.status_code==200 and second.json()['duplicate'] is True
     invalid=client.post('/api/v1/billing/webhook',content=payload,headers={'Stripe-Signature':'t=1,v1=bad'})
     assert invalid.status_code==400
+
+def test_authenticated_user_can_change_password_and_wrong_current_password_is_rejected():
+    login = client.post('/api/v1/auth/login', json={'email':'admin@example.com','password':'Correct-Horse-123!'}).json()
+    headers = {'Authorization':f"Bearer {login['access_token']}"}
+    wrong = client.post('/api/v1/auth/password', headers=headers, json={
+        'current_password':'incorrect','new_password':'New-Correct-Horse-456!'
+    })
+    assert wrong.status_code == 400
+    changed = client.post('/api/v1/auth/password', headers=headers, json={
+        'current_password':'Correct-Horse-123!','new_password':'New-Correct-Horse-456!'
+    })
+    assert changed.status_code == 200
+    assert client.post('/api/v1/auth/login', json={
+        'email':'admin@example.com','password':'Correct-Horse-123!'
+    }).status_code == 401
+    assert client.post('/api/v1/auth/login', json={
+        'email':'admin@example.com','password':'New-Correct-Horse-456!'
+    }).status_code == 200
+    assert client.post('/api/v1/auth/password', headers=headers, json={
+        'current_password':'New-Correct-Horse-456!','new_password':'short'
+    }).status_code == 422
+def test_admin_can_rotate_node_token_and_old_token_is_rejected():
+    login = client.post('/api/v1/auth/login', json={'email':'admin@example.com','password':'Correct-Horse-123!'}).json()
+    admin = {'Authorization':f"Bearer {login['access_token']}"}
+    enrolled = client.post('/api/v1/admin/nodes', headers=admin, json={'name':'rotate-node','fqdn':'rotate.example.test'}).json()
+    old_token = enrolled['token']
+    rotated = client.post(f"/api/v1/admin/nodes/{enrolled['node']['id']}/token", headers=admin)
+    assert rotated.status_code == 200
+    new_token = rotated.json()['token']
+    assert new_token != old_token
+    heartbeat = {'cpu_percent':1,'memory_total':1000,'memory_used':100,'disk_total':5000,'disk_used':1000}
+    assert client.post('/api/v1/nodes/heartbeat', headers={'X-Node-Token':old_token}, json=heartbeat).status_code == 401
+    assert client.post('/api/v1/nodes/heartbeat', headers={'X-Node-Token':new_token}, json=heartbeat).status_code == 200
+    assert client.post(f"/api/v1/admin/nodes/{enrolled['node']['id']}/token").status_code == 401

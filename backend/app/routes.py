@@ -9,7 +9,7 @@ from app.audit import record_event
 from app.database import get_db
 from app.dependencies import get_current_user, require_admin
 from app.models import AuditEvent, GameServer, Node, NodeTask, User, ServerSubuser
-from app.schemas import LoginRequest, MessageResponse, NodeCreate, NodeHeartbeat, NodeRead, NodeTaskResult, ServerAction, ServerCreate, ServerRead, TokenResponse, UserCreate, UserRead, ConsoleCommand, ServerFileRequest, MinecraftAction, BackupAction, VersionUpgrade, ServerMemberCreate
+from app.schemas import LoginRequest, PasswordChange, MessageResponse, NodeCreate, NodeHeartbeat, NodeRead, NodeTaskResult, ServerAction, ServerCreate, ServerRead, TokenResponse, UserCreate, UserRead, ConsoleCommand, ServerFileRequest, MinecraftAction, BackupAction, VersionUpgrade, ServerMemberCreate
 from app.security import DUMMY_HASH, create_access_token, hash_password, verify_password
 
 router = APIRouter()
@@ -25,6 +25,17 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     record_event(db, 'auth.login', user, 'Successful sign-in')
     db.commit()
     return TokenResponse(access_token=token, expires_in=expires, user=user)
+
+@router.post('/auth/password', response_model=MessageResponse)
+def change_password(payload: PasswordChange, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not verify_password(payload.current_password, actor.password_hash):
+        raise HTTPException(status_code=400, detail='Current password is incorrect')
+    if verify_password(payload.new_password, actor.password_hash):
+        raise HTTPException(status_code=400, detail='Choose a password different from your current password')
+    actor.password_hash = hash_password(payload.new_password)
+    record_event(db, 'auth.password.change', actor, 'Account password changed')
+    db.commit()
+    return MessageResponse(message='Password changed successfully')
 
 @router.get('/auth/me', response_model=UserRead)
 def me(user: User = Depends(get_current_user)):
@@ -67,7 +78,7 @@ def set_user_status(user_id: int, is_active: bool, actor: User = Depends(require
 
 @router.get('/admin/audit', response_model=list[dict])
 def list_audit(_: User = Depends(require_admin), db: Session = Depends(get_db)):
-    rows = db.execute(select(AuditEvent.id, AuditEvent.actor_id, AuditEvent.action, AuditEvent.detail, AuditEvent.created_at).order_by(AuditEvent.created_at.desc()).limit(200)).mappings().all()
+    rows = db.execute(select(AuditEvent.id, AuditEvent.actor_id, User.username.label('actor_username'), AuditEvent.action, AuditEvent.detail, AuditEvent.created_at).outerjoin(User, User.id == AuditEvent.actor_id).order_by(AuditEvent.created_at.desc()).limit(200)).mappings().all()
     return [dict(row) for row in rows]
 
 @router.get('/health', response_model=MessageResponse)
@@ -109,6 +120,17 @@ def node_heartbeat(payload: NodeHeartbeat, x_node_token: str | None = Header(def
     db.commit()
     db.refresh(node)
     return node
+
+@router.post('/admin/nodes/{node_id}/token')
+def rotate_node_token(node_id: int, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    node = db.get(Node, node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail='Node not found')
+    token = secrets.token_urlsafe(48)
+    node.token_hash = hashlib.sha256(token.encode()).hexdigest()
+    record_event(db, 'admin.node.token.rotate', actor, f'Rotated enrollment credential for node {node.name}')
+    db.commit()
+    return {'token': token, 'node_id': node.id, 'node_name': node.name}
 
 @router.patch('/admin/nodes/{node_id}/status', response_model=NodeRead)
 def set_node_status(node_id: int, is_enabled: bool, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
