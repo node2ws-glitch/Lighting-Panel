@@ -452,7 +452,6 @@ def ensure_sftp_network(client, server_id):
     return network
 
 def run_sftp_task(client, action, payload, server_id):
-    server_volume(client, server_id)
     name = f'lighting-sftp-{int(server_id)}'
     config_volume = f'lighting-sftp-config-{int(server_id)}'
     if action == 'sftp_delete':
@@ -478,6 +477,7 @@ def run_sftp_task(client, action, payload, server_id):
         return {'data':{'status':'removed'}}
     if action != 'sftp_create':
         raise ValueError('Unsupported SFTP operation')
+    server_volume(client, server_id)
     port = int(payload.get('port',0))
     username = str(payload.get('username',''))
     password = decrypt_node_secret(payload)
@@ -554,16 +554,6 @@ def run_database_task(client, action, payload, server_id, server_container):
         raise ValueError('Database task has no valid database id')
     name = f'lighting-db-{database_id}'
     volume_name = f'lighting-db-data-{database_id}'
-    network = ensure_server_network(client, server_id)
-    server_container.reload()
-    connected = server_container.attrs.get('NetworkSettings',{}).get('Networks',{}) or {}
-    if network.name not in connected:
-        network.connect(server_container, aliases=[f'lighting-server-{server_id}'])
-    if 'bridge' in connected:
-        try:
-            client.networks.get('bridge').disconnect(server_container, force=True)
-        except docker.errors.APIError:
-            pass
     if action == 'database_delete':
         try:
             container = client.containers.get(name)
@@ -579,6 +569,16 @@ def run_database_task(client, action, payload, server_id, server_container):
         except docker.errors.NotFound:
             pass
         return {'data':{'status':'removed'}}
+    network = ensure_server_network(client, server_id)
+    server_container.reload()
+    connected = server_container.attrs.get('NetworkSettings',{}).get('Networks',{}) or {}
+    if network.name not in connected:
+        network.connect(server_container, aliases=[f'lighting-server-{server_id}'])
+    if 'bridge' in connected:
+        try:
+            client.networks.get('bridge').disconnect(server_container, force=True)
+        except docker.errors.APIError:
+            pass
     db_type = str(payload.get('db_type',''))
     database_name = str(payload.get('database_name',''))
     username = str(payload.get('username',''))
@@ -691,6 +691,10 @@ def run_task(client, task):
     except docker.errors.NotFound:
         if action == 'delete':
             return cleanup_server_resources(client, server_id)
+        if action == 'sftp_delete':
+            return run_sftp_task(client, action, payload, server_id)
+        if action == 'database_delete':
+            return run_database_task(client, action, payload, server_id, None)
         raise RuntimeError('Managed server container does not exist')
     if container.labels.get(LABEL_OWNER) != 'true' or container.labels.get('net.lightingpanel.server-id') != str(server_id):
         raise RuntimeError('Refusing to operate on a container not owned by Lighting Panel')
