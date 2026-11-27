@@ -341,7 +341,6 @@ def claim_node_tasks(x_node_token: str | None = Header(default=None), db: Sessio
         if active is None:
             db.add(NodeTask(node_id=node.id, server_id=schedule.server_id, action='backup_create',
                 payload=json.dumps({'server_id': schedule.server_id, 'label': 'scheduled', 'schedule_id': schedule.id, 'retention': schedule.retention})))
-            schedule.last_run_at = now
         next_run = schedule.next_run_at
         if next_run.tzinfo is None:
             next_run = next_run.replace(tzinfo=timezone.utc)
@@ -404,6 +403,12 @@ def finish_node_task(task_id: int, payload: NodeTaskResult, x_node_token: str | 
                         db.delete(database)
             else:
                 server.status = 'online'
+    if task.action == 'backup_create' and not payload.error:
+        schedule_id = json.loads(task.payload).get('schedule_id')
+        if schedule_id:
+            schedule = db.get(BackupSchedule, int(schedule_id))
+            if schedule is not None:
+                schedule.last_run_at = datetime.now(timezone.utc)
     db.commit()
     return {'accepted':True}
 
