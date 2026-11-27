@@ -532,6 +532,67 @@ def queue_allocation_reconfigure(server: GameServer, node: Node, db: Session):
     server.status = 'starting'
     return task
 
+
+@router.get('/admin/servers/{server_id}/sftp', response_model=SftpAccessRead | None)
+def get_server_sftp(server_id: int, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    server = require_server_permission(server_id, actor, 'server.manage', db)
+    access = db.scalar(select(SftpAccess).where(SftpAccess.server_id == server_id))
+    if access is None:
+        return None
+    node = db.get(Node, server.node_id)
+    return {'id':access.id,'server_id':access.server_id,'username':access.username,'port':access.port,
+        'status':access.status,'host':node.fqdn if node else 'Unavailable','created_at':access.created_at}
+
+@router.post('/admin/servers/{server_id}/sftp', status_code=status.HTTP_202_ACCEPTED)
+def create_server_sftp(server_id: int, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    server = require_server_permission(server_id, actor, 'server.manage', db)
+    node = db.get(Node, server.node_id)
+    if node is None or not node.is_enabled or not node_is_recent(node):
+        raise HTTPException(status_code=409, detail='Server node is offline')
+    if server.status not in ('online','offline'):
+        raise HTTPException(status_code=409, detail='Wait for the server to finish its current operation')
+    existing = db.scalar(select(SftpAccess).where(SftpAccess.server_id == server_id))
+    if existing is not None and existing.status != 'error':
+        raise HTTPException(status_code=409, detail='SFTP access is already configured or being provisioned')
+    if existing is not None:
+        db.delete(existing)
+        db.flush()
+    used = set(db.scalars(select(SftpAccess.port)).all()) | set(db.scalars(select(GameServer.allocation_port)).all()) | set(db.scalars(select(ServerAllocation.port)).all())
+    port = next((candidate for candidate in range(31000,32000) if candidate not in used),None)
+    if port is None:
+        raise HTTPException(status_code=409, detail='No SFTP ports are available on this panel')
+    username = f'lpgp{server.id}'
+    password = secrets.token_urlsafe(28)
+    access = SftpAccess(server_id=server.id,node_id=node.id,username=username,password_hash=hash_password(password),port=port,status='provisioning')
+    db.add(access)
+    db.flush()
+    task = NodeTask(node_id=node.id,server_id=server.id,action='sftp_create',payload=json.dumps({
+        'server_id':server.id,'username':username,'password':password,'port':port
+    }))
+    db.add(task)
+    record_event(db,'server.sftp.create',actor,f'Queued SFTP service for server {server.id} on port {port}')
+    db.commit()
+    db.refresh(access)
+    return {'task_id':task.id,'status':task.status,'password':password,
+        'access':{'id':access.id,'server_id':server.id,'username':username,'port':port,'status':access.status,'host':node.fqdn,'created_at':access.created_at}}
+
+@router.delete('/admin/servers/{server_id}/sftp', status_code=status.HTTP_202_ACCEPTED)
+def delete_server_sftp(server_id: int, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    server = require_server_permission(server_id, actor, 'server.manage', db)
+    access = db.scalar(select(SftpAccess).where(SftpAccess.server_id == server_id))
+    if access is None:
+        raise HTTPException(status_code=404, detail='SFTP access is not configured')
+    node = db.get(Node, server.node_id)
+    if node is None or not node.is_enabled or not node_is_recent(node):
+        raise HTTPException(status_code=409, detail='Server node is offline')
+    task = NodeTask(node_id=node.id,server_id=server.id,action='sftp_delete',payload=json.dumps({'server_id':server.id,'port':access.port}))
+    access.status = 'deleting'
+    db.add(task)
+    record_event(db,'server.sftp.delete',actor,f'Queued SFTP removal for server {server.id}')
+    db.commit()
+    db.refresh(task)
+    return {'task_id':task.id,'status':task.status}
+
 @router.get('/admin/servers/{server_id}/allocations', response_model=list[ServerAllocationRead])
 def list_server_allocations(server_id: int, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
     require_server_permission(server_id, actor, 'server.read', db)
