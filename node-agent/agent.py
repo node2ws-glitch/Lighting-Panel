@@ -468,12 +468,18 @@ def run_sftp_task(client, action, payload, server_id):
         existing = client.containers.get(name)
         if existing.labels.get(LABEL_OWNER) != 'true' or existing.labels.get('net.lightingpanel.sftp-server-id') != str(server_id):
             raise RuntimeError('SFTP container name collision; refusing to modify an unmanaged container')
-        return {'data':{'status':'active','port':port}}
+        existing.remove(force=True)
+    except docker.errors.NotFound:
+        pass
+    try:
+        old_config = client.volumes.get(config_volume)
+        if old_config.attrs.get('Labels',{}).get(LABEL_OWNER) == 'true' and old_config.attrs.get('Labels',{}).get('net.lightingpanel.sftp-server-id') == str(server_id):
+            old_config.remove(force=False)
     except docker.errors.NotFound:
         pass
     client.volumes.create(name=config_volume,labels={LABEL_OWNER:'true','net.lightingpanel.sftp-server-id':str(server_id)})
     admin_user = 'lpgp-admin'
-    admin_password = secrets.token_urlsafe(36)
+    admin_password = __import__('hashlib').sha256((os.getenv('NODE_TOKEN','') + ':lpgp-sftp-admin:' + str(server_id)).encode()).hexdigest()
     container = client.containers.run(
         'drakkan/sftpgo:latest',name=name,detach=True,
         environment={
