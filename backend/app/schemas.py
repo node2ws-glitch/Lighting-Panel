@@ -164,6 +164,7 @@ class BackupScheduleUpdate(BaseModel):
     enabled: bool | None = None
 
 class BackupScheduleRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     id: int
     server_id: int
     name: str
