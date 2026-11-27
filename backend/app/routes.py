@@ -8,8 +8,8 @@ from sqlalchemy.orm import Session
 from app.audit import record_event
 from app.database import get_db
 from app.dependencies import get_current_user, require_admin
-from app.models import AuditEvent, GameServer, Node, NodeTask, User, ServerSubuser, BackupSchedule, ServerAllocation, ApiKey
-from app.schemas import LoginRequest, PasswordChange, MessageResponse, NodeCreate, NodeHeartbeat, NodeRead, NodeTaskResult, ServerAction, ServerCreate, ServerRead, TokenResponse, UserCreate, UserRead, ConsoleCommand, ServerFileRequest, MinecraftAction, BackupAction, VersionUpgrade, ServerMemberCreate, BackupScheduleCreate, BackupScheduleUpdate, BackupScheduleRead, ModManagerRequest, ServerAllocationCreate, ServerAllocationRead, ApiKeyCreate, ApiKeyRead
+from app.models import AuditEvent, GameServer, Node, NodeTask, User, ServerSubuser, BackupSchedule, ServerAllocation, ApiKey, SftpAccess
+from app.schemas import LoginRequest, PasswordChange, MessageResponse, NodeCreate, NodeHeartbeat, NodeRead, NodeTaskResult, ServerAction, ServerCreate, ServerRead, TokenResponse, UserCreate, UserRead, ConsoleCommand, ServerFileRequest, MinecraftAction, BackupAction, VersionUpgrade, ServerMemberCreate, BackupScheduleCreate, BackupScheduleUpdate, BackupScheduleRead, ModManagerRequest, ServerAllocationCreate, ServerAllocationRead, ApiKeyCreate, ApiKeyRead, SftpAccessRead
 from app.security import DUMMY_HASH, create_access_token, hash_password, verify_password
 
 router = APIRouter()
@@ -352,7 +352,7 @@ def finish_node_task(task_id: int, payload: NodeTaskResult, x_node_token: str | 
     task.status = 'failed' if payload.error else 'completed'
     task.result = json.dumps({'docker_id':payload.docker_id,'error':payload.error,'data':payload.data})
     task.completed_at = datetime.now(timezone.utc)
-    if task.server_id and task.action in ('provision','start','stop','restart','delete','version_upgrade','allocation_update'):
+    if task.server_id and task.action in ('provision','start','stop','restart','delete','version_upgrade','allocation_update','sftp_create','sftp_delete'):
         server = db.get(GameServer, task.server_id)
         if server:
             server.docker_id = payload.docker_id or server.docker_id
@@ -369,6 +369,15 @@ def finish_node_task(task_id: int, payload: NodeTaskResult, x_node_token: str | 
             elif task.action == 'allocation_update' and not payload.error:
                 result_data = payload.data or {}
                 server.status = result_data.get('status', 'online')
+            elif task.action in ('sftp_create','sftp_delete'):
+                access = db.scalar(select(SftpAccess).where(SftpAccess.server_id == server.id))
+                if access is not None:
+                    if payload.error:
+                        access.status = 'error'
+                    elif task.action == 'sftp_create':
+                        access.status = 'active'
+                    else:
+                        db.delete(access)
             else:
                 server.status = 'online'
     db.commit()
