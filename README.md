@@ -27,7 +27,8 @@ The server workspace includes:
 - Minecraft player/whitelist/operator actions and server.properties settings.
 - Node-local create/list/restore backups and Minecraft version upgrades with pre-operation snapshots.
 - Owner-managed server team access with API-enforced per-server permissions.
-- Live node telemetry, administrative audit events, operational counters and optional Stripe customer billing.
+- Live node telemetry, administrative audit events, an activity-backed notification drawer, operational counters and optional Stripe customer billing.
+- Authenticated account password changes and administrator-only node credential rotation with one-time token display.
 
 This remains an early single-node runtime, not a production-hardened Pterodactyl replacement. Per-container CPU/RAM telemetry, automatic container health reconciliation, SFTP, plugin/mod installation, schedules, database provisioning, multi-allocation management, disk quotas, image update policy, firewall automation are not implemented. Node credentials can be rotated by an administrator; the new token is shown once and must be installed on the VPS agent before it reconnects. Stripe is optional hosting-customer billing and never activates LPGP itself. Do not expose this deployment to untrusted tenants until the remaining isolation and operational controls are implemented.
 
