@@ -149,3 +149,27 @@ class BillingSubscriptionRead(BaseModel):
     current_period_end: datetime | None
     cancel_at_period_end: bool
     invoices: list[BillingInvoiceRead]
+
+
+class BackupScheduleCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=80, pattern=r'^[a-zA-Z0-9 _.-]+$')
+    frequency: Literal['hourly', 'daily', 'weekly']
+    retention: int = Field(default=7, ge=1, le=100)
+    enabled: bool = True
+
+class BackupScheduleUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=80, pattern=r'^[a-zA-Z0-9 _.-]+$')
+    frequency: Literal['hourly', 'daily', 'weekly'] | None = None
+    retention: int | None = Field(default=None, ge=1, le=100)
+    enabled: bool | None = None
+
+class BackupScheduleRead(BaseModel):
+    id: int
+    server_id: int
+    name: str
+    frequency: str
+    retention: int
+    enabled: bool
+    next_run_at: datetime
+    last_run_at: datetime | None
+    created_at: datetime
