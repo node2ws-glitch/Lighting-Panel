@@ -220,3 +220,22 @@ class SftpAccessRead(BaseModel):
     status: str
     host: str
     created_at: datetime
+
+
+class DatabaseCreate(BaseModel):
+    db_type: Literal['mariadb', 'postgres']
+    database_name: str = Field(min_length=3, max_length=48, pattern=r'^[a-zA-Z][a-zA-Z0-9_]+$')
+    username: str = Field(min_length=3, max_length=32, pattern=r'^[a-zA-Z][a-zA-Z0-9_]+$')
+
+class DatabaseServiceRead(BaseModel):
+    id: int
+    server_id: int
+    db_type: str
+    database_name: str
+    username: str
+    host: str
+    internal_host: str
+    port: int
+    internal_port: int
+    status: str
+    created_at: datetime
