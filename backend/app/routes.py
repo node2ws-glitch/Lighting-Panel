@@ -75,6 +75,8 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
 
 @router.post('/auth/password', response_model=MessageResponse)
 def change_password(payload: PasswordChange, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if getattr(actor, '_api_key_read_only', False):
+        raise HTTPException(status_code=403, detail='Read-only API keys cannot change account passwords')
     if not verify_password(payload.current_password, actor.password_hash):
         raise HTTPException(status_code=400, detail='Current password is incorrect')
     if verify_password(payload.new_password, actor.password_hash):
