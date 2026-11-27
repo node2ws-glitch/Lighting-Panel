@@ -438,6 +438,19 @@ def decrypt_node_secret(payload):
     except Exception as exc:
         raise RuntimeError('Could not decrypt the node task credential; check node token synchronization') from exc
 
+
+def ensure_sftp_network(client, server_id):
+    name = f'lighting-sftp-net-{int(server_id)}'
+    try:
+        network = client.networks.get(name)
+    except docker.errors.NotFound:
+        network = client.networks.create(name, driver='bridge',
+            labels={LABEL_OWNER:'true','net.lightingpanel.sftp-server-id':str(server_id)})
+    labels = network.attrs.get('Labels', {}) or {}
+    if labels.get(LABEL_OWNER) != 'true' or labels.get('net.lightingpanel.sftp-server-id') != str(server_id):
+        raise RuntimeError('SFTP network ownership validation failed')
+    return network
+
 def run_sftp_task(client, action, payload, server_id):
     server_volume(client, server_id)
     name = f'lighting-sftp-{int(server_id)}'
@@ -478,6 +491,7 @@ def run_sftp_task(client, action, payload, server_id):
     except docker.errors.NotFound:
         pass
     client.volumes.create(name=config_volume,labels={LABEL_OWNER:'true','net.lightingpanel.sftp-server-id':str(server_id)})
+    sftp_network = ensure_sftp_network(client, server_id)
     admin_user = 'lpgp-admin'
     admin_password = __import__('hashlib').sha256((os.getenv('NODE_TOKEN','') + ':lpgp-sftp-admin:' + str(server_id)).encode()).hexdigest()
     container = client.containers.run(
@@ -492,7 +506,7 @@ def run_sftp_task(client, action, payload, server_id):
             'SFTPGO_SFTPD__BINDINGS__0__PORT':'2022',
             'SFTPGO_LOG_LEVEL':'info',
         },
-        ports={'2022/tcp':('0.0.0.0',port)},
+        ports={'2022/tcp':('0.0.0.0',port)},network=sftp_network.name,
         volumes={f'lighting-server-data-{server_id}':{'bind':'/srv/sftpgo/data','mode':'rw'},
                  config_volume:{'bind':'/var/lib/sftpgo','mode':'rw'}},
         labels={LABEL_OWNER:'true','net.lightingpanel.sftp-server-id':str(server_id)},
@@ -589,7 +603,7 @@ def run_database_task(client, action, payload, server_id, server_container):
         image,name=name,detach=True,environment=env,
         ports={f'{internal_port}/tcp':('0.0.0.0',port)},
         volumes={volume_name:{'bind':'/var/lib/mysql' if db_type == 'mariadb' else '/var/lib/postgresql/data','mode':'rw'}},
-        network=network.name,mem_limit='768m',nano_cpus=500000000,pids_limit=256,
+        network=network.name,mem_limit='384m',nano_cpus=250000000,pids_limit=256,
         labels={LABEL_OWNER:'true','net.lightingpanel.database-id':str(database_id),'net.lightingpanel.server-id':str(server_id)},
         restart_policy={'Name':'unless-stopped'},cap_drop=['NET_RAW','SYS_CHROOT','MKNOD'],
         security_opt=['no-new-privileges:true'])
@@ -614,14 +628,14 @@ def cleanup_server_resources(client, server_id):
                 volume.remove(force=False)
             except docker.errors.APIError as exc:
                 log.warning('Could not remove managed volume %s for server %s: %s',volume.name,server_id,exc)
-    network_name = f'lighting-server-net-{server_id}'
-    try:
-        network = client.networks.get(network_name)
-        labels = network.attrs.get('Labels',{}) or {}
-        if labels.get(LABEL_OWNER) == 'true' and labels.get('net.lightingpanel.server-id') == server_id:
-            network.remove()
-    except docker.errors.NotFound:
-        pass
+    for network_name, label_key in ((f'lighting-server-net-{server_id}','net.lightingpanel.server-id'),(f'lighting-sftp-net-{server_id}','net.lightingpanel.sftp-server-id')):
+        try:
+            network = client.networks.get(network_name)
+            labels = network.attrs.get('Labels',{}) or {}
+            if labels.get(LABEL_OWNER) == 'true' and labels.get(label_key) == server_id:
+                network.remove()
+        except docker.errors.NotFound:
+            pass
     return {'docker_id':None}
 
 def run_task(client, task):
