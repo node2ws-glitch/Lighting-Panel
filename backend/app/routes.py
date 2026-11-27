@@ -509,7 +509,7 @@ def upgrade_server_version(server_id: int, payload: VersionUpgrade, actor: User 
         raise HTTPException(status_code=409, detail='Server is already configured for this version')
     task = NodeTask(node_id=node.id, server_id=server.id, action='version_upgrade',
         payload=json.dumps({'server_id':server.id,'version':payload.version,'previous_version':server.version,
-            'memory_mb':server.memory_mb,'cpu_limit':server.cpu_limit,'port':server.allocation_port}))
+            'memory_mb':server.memory_mb,'cpu_limit':server.cpu_limit,'port':server.allocation_port,'server_type':server.server_type}))
     db.add(task)
     record_event(db, 'admin.server.version.upgrade', actor, f'Queued Minecraft version {payload.version} for server {server.id}')
     db.commit()
