@@ -548,6 +548,24 @@ def run_sftp_task(client, action, payload, server_id):
         raise
 
 
+
+def wait_for_container_port(container, network, port, attempts=45):
+    for _ in range(attempts):
+        container.reload()
+        if container.status != 'running':
+            time.sleep(1)
+            continue
+        networks = container.attrs.get('NetworkSettings',{}).get('Networks',{}) or {}
+        address = (networks.get(network.name) or {}).get('IPAddress')
+        if address:
+            try:
+                with socket.create_connection((address, int(port)), timeout=2):
+                    return True
+            except OSError:
+                pass
+        time.sleep(1)
+    raise RuntimeError(f'Managed service did not open its internal TCP port {port} in time')
+
 def run_database_task(client, action, payload, server_id, server_container):
     database_id = int(payload.get('database_id', 0))
     if database_id <= 0:
@@ -596,7 +614,9 @@ def run_database_task(client, action, payload, server_id, server_container):
         db_networks = existing.attrs.get('NetworkSettings',{}).get('Networks',{}) or {}
         if network.name not in db_networks:
             network.connect(existing, aliases=[name])
-        return {'data':{'status':'active','internal_host':name,'internal_port':3306 if db_type == 'mariadb' else 5432}}
+        internal_port = 3306 if db_type == 'mariadb' else 5432
+        wait_for_container_port(existing, network, internal_port)
+        return {'data':{'status':'active','internal_host':name,'internal_port':internal_port}}
     except docker.errors.NotFound:
         pass
     db_volume = client.volumes.create(name=volume_name,labels={LABEL_OWNER:'true','net.lightingpanel.database-id':str(database_id),'net.lightingpanel.server-id':str(server_id)})
@@ -613,6 +633,7 @@ def run_database_task(client, action, payload, server_id, server_container):
         labels={LABEL_OWNER:'true','net.lightingpanel.database-id':str(database_id),'net.lightingpanel.server-id':str(server_id)},
         restart_policy={'Name':'unless-stopped'},cap_drop=['NET_RAW','SYS_CHROOT','MKNOD'],
         security_opt=['no-new-privileges:true'])
+    wait_for_container_port(container, network, internal_port)
     return {'data':{'status':'active','internal_host':name,'internal_port':internal_port,'docker_id':container.id}}
 
 
