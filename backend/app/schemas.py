@@ -182,3 +182,16 @@ class ModManagerRequest(BaseModel):
     kind: Literal['plugin', 'mod']
     url: str | None = Field(default=None, max_length=2048)
     filename: str | None = Field(default=None, min_length=5, max_length=128, pattern=r'^[A-Za-z0-9_. -]+\.jar$')
+
+class ServerAllocationCreate(BaseModel):
+    container_port: int = Field(ge=1024, le=65535)
+    protocol: Literal['tcp', 'udp'] = 'tcp'
+
+class ServerAllocationRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    server_id: int
+    port: int
+    container_port: int
+    protocol: str
+    created_at: datetime
