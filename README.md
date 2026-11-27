@@ -10,7 +10,7 @@ See [the LPGP migration plan](docs/LPGP-MIGRATION.md) for architecture decisions
 
 - Responsive React/Vite panel with animated dark UI and protected sign-in.
 - FastAPI backend with PostgreSQL, SQLAlchemy and Alembic migrations.
-- Argon2 password hashing, short-lived JWT authentication, administrator roles and audit events.
+- Argon2 password hashing, short-lived JWT authentication, administrator roles, audit events, and authenticated password changes with current-password verification.
 - VPS node enrollment, one-time node credentials and authenticated CPU/RAM/disk telemetry.
 - Docker-backed Minecraft Java provisioning through the node agent.
 - Persistent per-server Docker volumes, dedicated TCP allocations, CPU/RAM limits and queued start/stop/restart/delete operations.
