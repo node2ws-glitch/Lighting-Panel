@@ -416,3 +416,39 @@ def test_additional_server_allocations_queue_container_reconfiguration():
         json={'docker_id':'docker-reconfigured','data':{'status':'online','allocations':2}})
     assert client.get(f'/api/v1/admin/servers/{sid}/allocations', headers=admin).json()[0]['protocol'] == 'udp'
     assert client.delete(f"/api/v1/admin/servers/{sid}/allocations/{added.json()['id']}", headers=admin).status_code == 202
+
+
+def test_personal_api_keys_are_read_only_and_revocable():
+    with TestingSession() as db:
+        customer = User(email='customer@example.com', username='customer', password_hash=hash_password('Customer-Password-123!'), role='user')
+        db.add(customer)
+        db.commit()
+    admin_login = client.post('/api/v1/auth/login', json={'email':'admin@example.com','password':'Correct-Horse-123!'}).json()
+    admin = {'Authorization':f"Bearer {admin_login['access_token']}"}
+    customer_login = client.post('/api/v1/auth/login', json={'email':'customer@example.com','password':'Customer-Password-123!'}).json()
+    customer_auth = {'Authorization':f"Bearer {customer_login['access_token']}"}
+    enrolled = client.post('/api/v1/admin/nodes', headers=admin, json={'name':'api-key-node','fqdn':'api-key.example.test'}).json()
+    node_headers = {'X-Node-Token':enrolled['token']}
+    client.post('/api/v1/nodes/heartbeat', headers=node_headers, json={
+        'cpu_percent':1,'memory_total':8*1024**3,'memory_used':1024**3,'disk_total':80*1024**3,'disk_used':5*1024**3
+    })
+    created = client.post('/api/v1/admin/servers', headers=admin, json={
+        'name':'Customer Server','node_id':enrolled['node']['id'],'owner_email':'customer@example.com','memory_mb':1024,'cpu_limit':1
+    }).json()
+    provision = client.get('/api/v1/nodes/tasks', headers=node_headers).json()[0]
+    client.post(f"/api/v1/nodes/tasks/{provision['id']}/result", headers=node_headers, json={'docker_id':'docker-customer'})
+    made = client.post('/api/v1/auth/api-keys', headers=customer_auth, json={'name':'Monitoring','expires_days':30})
+    assert made.status_code == 201, made.text
+    token = made.json()['api_key']
+    key_headers = {'Authorization':f'Bearer {token}'}
+    assert token.startswith('lpgp_')
+    assert client.get('/api/v1/auth/me', headers=key_headers).json()['username'] == 'customer'
+    visible = client.get('/api/v1/admin/servers', headers=key_headers)
+    assert visible.status_code == 200
+    assert any(server['id'] == created['id'] for server in visible.json())
+    denied = client.post(f"/api/v1/admin/servers/{created['id']}/action", headers=key_headers, json={'action':'start'})
+    assert denied.status_code == 403
+    assert client.get('/api/v1/admin/users', headers=key_headers).status_code == 403
+    key_id = made.json()['key']['id']
+    assert client.delete(f'/api/v1/auth/api-keys/{key_id}', headers=customer_auth).status_code == 204
+    assert client.get('/api/v1/auth/me', headers=key_headers).status_code == 401
