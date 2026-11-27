@@ -26,6 +26,17 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     db.commit()
     return TokenResponse(access_token=token, expires_in=expires, user=user)
 
+@router.post('/auth/password', response_model=MessageResponse)
+def change_password(payload: PasswordChange, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not verify_password(payload.current_password, actor.password_hash):
+        raise HTTPException(status_code=400, detail='Current password is incorrect')
+    if verify_password(payload.new_password, actor.password_hash):
+        raise HTTPException(status_code=400, detail='Choose a password different from your current password')
+    actor.password_hash = hash_password(payload.new_password)
+    record_event(db, 'auth.password.change', actor, 'Account password changed')
+    db.commit()
+    return MessageResponse(message='Password changed successfully')
+
 @router.get('/auth/me', response_model=UserRead)
 def me(user: User = Depends(get_current_user)):
     return user
