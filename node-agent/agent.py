@@ -557,7 +557,7 @@ def run_database_task(client, action, payload, server_id, server_container):
         image,name=name,detach=True,environment=env,
         ports={f'{internal_port}/tcp':('0.0.0.0',port)},
         volumes={volume_name:{'bind':'/var/lib/mysql' if db_type == 'mariadb' else '/var/lib/postgresql/data','mode':'rw'}},
-        network=network.name,mem_limit='768m',nano_cpus=500000000,pids_limit=256,
+        mem_limit='768m',nano_cpus=500000000,pids_limit=256,
         labels={LABEL_OWNER:'true','net.lightingpanel.database-id':str(database_id),'net.lightingpanel.server-id':str(server_id)},
         restart_policy={'Name':'unless-stopped'},cap_drop=['NET_RAW','SYS_CHROOT','MKNOD'],
         security_opt=['no-new-privileges:true'])
@@ -589,6 +589,11 @@ def run_task(client, task):
                 raise RuntimeError('Container name collision; refusing to modify an unmanaged container')
             if existing.status != 'running':
                 existing.start()
+            network = ensure_server_network(client, server_id)
+            existing.reload()
+            connected = existing.attrs.get('NetworkSettings',{}).get('Networks',{}) or {}
+            if network.name not in connected:
+                network.connect(existing, aliases=[f'lighting-server-{server_id}'])
             return {'docker_id': existing.id}
         except docker.errors.NotFound:
             pass
