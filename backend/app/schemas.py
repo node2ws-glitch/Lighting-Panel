@@ -62,7 +62,8 @@ class ServerCreate(BaseModel):
     name: str = Field(min_length=3, max_length=48, pattern=r'^[a-zA-Z0-9 _.-]+$')
     node_id: int = Field(gt=0)
     owner_email: EmailStr | None = None
-    version: str = Field(default='LATEST', max_length=24, pattern=r'^(LATEST|[0-9]+\.[0-9]+(\.[0-9]+)?)
+    version: str = Field(default='LATEST', max_length=24, pattern=r'^(LATEST|[0-9]+\.[0-9]+(\.[0-9]+)?)$')
+    server_type: Literal['paper', 'fabric', 'forge'] = 'paper'
     memory_mb: int = Field(default=2048, ge=512, le=16384)
     cpu_limit: float = Field(default=2.0, ge=0.5, le=16)
 
