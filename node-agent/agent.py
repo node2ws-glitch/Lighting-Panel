@@ -417,7 +417,9 @@ def reconfigure_server_allocations(client, server_id, container, payload):
         replacement = create_minecraft_container(client, server_id, str(payload.get('version','LATEST')),
             int(payload.get('memory_mb',1024)), float(payload.get('cpu_limit',1)),
             int(primary['port']), str(payload.get('server_type','paper')), extra)
-        return {'docker_id':replacement.id,'data':{'status':'online','allocations':len(allocations)}}
+        if not was_running:
+            replacement.stop(timeout=30)
+        return {'docker_id':replacement.id,'data':{'status':'online' if was_running else 'offline','allocations':len(allocations)}}
     except Exception:
         log.exception('Allocation reconfiguration failed for server %s', server_id)
         raise
