@@ -264,7 +264,17 @@ def run_backup_task(client, action, payload, server_id, container):
         if was_running:
             container.stop(timeout=30)
         try:
-            item = create_server_backup(client, server_id, mountpoint)
+            label = str(payload.get('label', 'manual'))[:32]
+            item = create_server_backup(client, server_id, mountpoint, label=label)
+            retention = int(payload.get('retention', 100))
+            if not 1 <= retention <= 100:
+                raise ValueError('Backup retention must be between 1 and 100')
+            if label == 'scheduled':
+                backups = list_server_backups(server_id)
+                for obsolete in backups[retention:]:
+                    candidate = (backup_directory(server_id) / (obsolete['id'] + '.tar.gz')).resolve()
+                    if candidate.parent == backup_directory(server_id).resolve() and candidate.is_file():
+                        candidate.unlink()
         finally:
             if was_running:
                 container.start()
