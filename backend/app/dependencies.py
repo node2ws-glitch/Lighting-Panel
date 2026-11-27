@@ -23,6 +23,7 @@ def get_current_user(credentials: HTTPAuthorizationCredentials | None = Depends(
             raise unauthorized
         user_id = api_key.user_id
         api_key.last_used_at = datetime.now(timezone.utc)
+        db.commit()
     else:
         try:
             user_id = decode_access_token(credential)
