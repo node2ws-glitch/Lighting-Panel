@@ -202,6 +202,7 @@ class ApiKeyCreate(BaseModel):
     expires_days: int | None = Field(default=90, ge=1, le=365)
 
 class ApiKeyRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     id: int
     name: str
     prefix: str
