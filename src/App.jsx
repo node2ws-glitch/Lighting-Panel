@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import Login from './Login.jsx';
-import { currentUser, clearToken, logout, changePassword, listUsers, createUser, setUserStatus, listAudit, listNodes, createNode, setNodeStatus, rotateNodeToken, listServers, createGameServer, controlServer, sendConsoleCommand, requestConsoleLogs, operateServerFiles, listServerTasks, getServerTask, minecraftAction, manageServerBackups, listBackupSchedules, createBackupSchedule, updateBackupSchedule, deleteBackupSchedule, manageServerMods, listServerAllocations, createServerAllocation, deleteServerAllocation, upgradeServerVersion, getServerAccess, listServerMembers, addServerMember, removeServerMember, getBillingSummary, startBillingCheckout, openBillingPortal, getOperationalMetrics } from './api.js';
+import { currentUser, clearToken, logout, changePassword, listUsers, createUser, setUserStatus, listAudit, listNodes, createNode, setNodeStatus, rotateNodeToken, listServers, createGameServer, controlServer, sendConsoleCommand, requestConsoleLogs, operateServerFiles, listServerTasks, getServerTask, minecraftAction, manageServerBackups, listBackupSchedules, createBackupSchedule, updateBackupSchedule, deleteBackupSchedule, manageServerMods, listServerAllocations, createServerAllocation, deleteServerAllocation, upgradeServerVersion, getServerAccess, listServerMembers, addServerMember, removeServerMember, getBillingSummary, startBillingCheckout, openBillingPortal, getOperationalMetrics, listApiKeys, createApiKey, revokeApiKey } from './api.js';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Activity, ArrowDownToLine, ArrowUpRight, Bell, Box, ChartNoAxesCombined, ChevronDown, CircleHelp, Command, Cpu, Database, FileText, Gamepad2, Gauge, HardDrive, LayoutDashboard, LifeBuoy, LogOut, Menu, MoreHorizontal, Network, Plus, Search, Server, Settings, ShieldCheck, Terminal, Users, Wallet, Wifi, X, Zap, Folder, FolderPlus, FilePlus, ChevronRight, RefreshCw, Save, Trash2, ArrowLeft, Send, LoaderCircle, FileCode, Download } from 'lucide-react';
 
@@ -89,6 +89,8 @@ function SecurityPage({announce,user}){
  const [metrics,setMetrics]=useState(null),[error,setError]=useState('');
  const [currentPassword,setCurrentPassword]=useState(''),[newPassword,setNewPassword]=useState(''),[confirmPassword,setConfirmPassword]=useState('');
  const [saving,setSaving]=useState(false),[passwordMessage,setPasswordMessage]=useState('');
+ const [apiKeys,setApiKeys]=useState([]),[apiKeyName,setApiKeyName]=useState(''),[newApiKey,setNewApiKey]=useState(''),[keyBusy,setKeyBusy]=useState(false);
+ useEffect(()=>{if(user?.role==='admin')return;listApiKeys().then(setApiKeys).catch(e=>setError(e.message));},[user?.role]);
  useEffect(()=>{if(user?.role!=='admin')return;let alive=true;const load=()=>getOperationalMetrics().then(v=>{if(alive){setMetrics(v);setError('');}}).catch(e=>{if(alive)setError(e.message);});load();const timer=setInterval(load,15000);return()=>{alive=false;clearInterval(timer);};},[user?.role]);
  async function submitPassword(e){
   e.preventDefault();setPasswordMessage('');setError('');
@@ -97,6 +99,18 @@ function SecurityPage({announce,user}){
   try{const result=await changePassword({current_password:currentPassword,new_password:newPassword});setPasswordMessage(result.message||'Password changed successfully.');setCurrentPassword('');setNewPassword('');setConfirmPassword('');announce('Account password updated');}
   catch(e){setError(e.message);}
   finally{setSaving(false);}
+ }
+
+ async function createKey(e){
+  e.preventDefault();setKeyBusy(true);setError('');
+  try{const result=await createApiKey({name:apiKeyName,expires_days:90});setNewApiKey(result.api_key);setApiKeyName('');setApiKeys(await listApiKeys());announce('Read-only API key created. Copy it now; it will not be shown again.');}
+  catch(e){setError(e.message);}finally{setKeyBusy(false);}
+ }
+ async function revokeKey(key){
+  if(!window.confirm('Revoke API key '+key.prefix+'? Any app using it will lose access immediately.'))return;
+  setKeyBusy(true);setError('');
+  try{await revokeApiKey(key.id);setApiKeys(await listApiKeys());announce('API key revoked');}
+  catch(e){setError(e.message);}finally{setKeyBusy(false);}
  }
  const tiles=metrics?[['Servers',metrics.servers.total+' total',metrics.servers.online+' online · '+metrics.servers.error+' errors'],['Nodes',metrics.nodes.total+' total',metrics.nodes.online+' online · '+metrics.nodes.offline+' offline'],['Task queue',metrics.tasks.pending+' pending',metrics.tasks.claimed+' claimed · '+metrics.tasks.failed+' failed'],['Customers',String(metrics.users.active),'Active accounts']]:[];
  return <div className="ops-grid">
@@ -113,6 +127,7 @@ function SecurityPage({announce,user}){
     {passwordMessage&&<p className="billing-renewal">{passwordMessage}</p>}
    </form>
   </div>
+  {user?.role!=='admin'&&<div className="panel security-account-card"><div className="panel-head"><div><h3>Personal API keys</h3><p>Read-only keys for external integrations. They cannot start, stop, modify, or delete servers.</p></div></div>{newApiKey&&<div className="node-token-box"><b>Copy this API key now</b><p>This token is shown only once. Store it in a password manager or secret store.</p><code>{newApiKey}</code><button className="small-action" onClick={()=>navigator.clipboard.writeText(newApiKey)}>Copy key</button><button className="small-action ghost" onClick={()=>setNewApiKey('')}>Dismiss</button></div>}<form className="user-create-form" onSubmit={createKey}><div className="user-form-grid"><input value={apiKeyName} onChange={e=>setApiKeyName(e.target.value)} placeholder="Key name (e.g. Monitoring)" minLength="2" maxLength="80" required/></div><button className="button-primary" disabled={keyBusy||!apiKeyName.trim()}><Plus size={14}/> Create read-only key</button></form><div className="backup-list">{apiKeys.map(key=><div className="backup-row" key={key.id}><div className="backup-symbol"><ShieldCheck size={16}/></div><div className="backup-meta"><b>{key.name}</b><small>{key.prefix}… · Created {new Date(key.created_at).toLocaleDateString()} · {key.revoked_at?'Revoked':key.expires_at?'Expires '+new Date(key.expires_at).toLocaleDateString():'No expiry'}</small></div>{!key.revoked_at&&<button className="small-action danger" disabled={keyBusy} onClick={()=>revokeKey(key)}>Revoke</button>}</div>)}{apiKeys.length===0&&<div className="backup-empty">No API keys created yet.</div>}</div><small className="muted">API keys are hashed in the database and shown once. Admin API keys are disabled; administrator actions require an interactive administrator session.</small></div>}
   {user?.role==='admin'&&<>
    {error&&<div className="auth-error">{error}</div>}
    <div className="section-heading"><div><h2>Platform operations</h2><p>Live infrastructure counters, refreshed every 15 seconds</p></div></div>
