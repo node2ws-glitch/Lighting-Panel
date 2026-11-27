@@ -359,6 +359,9 @@ def test_backup_schedule_creation_and_due_dispatch():
     scheduled = next(task for task in queued.json() if task['action'] == 'backup_create')
     assert scheduled['payload']['label'] == 'scheduled'
     assert scheduled['payload']['retention'] == 5
+    client.post(f"/api/v1/nodes/tasks/{scheduled['id']}/result", headers=node_headers, json={'data':{'backup':{'id':'20261127T120000Z-aabbccddeeff'}}})
+    refreshed = client.get(f'/api/v1/admin/servers/{sid}/backup-schedules', headers=admin).json()[0]
+    assert refreshed['last_run_at'] is not None
     assert client.delete(f"/api/v1/admin/servers/{sid}/backup-schedules/{schedule.json()['id']}", headers=admin).status_code == 204
 
 
