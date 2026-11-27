@@ -9,10 +9,48 @@ from app.audit import record_event
 from app.database import get_db
 from app.dependencies import get_current_user, require_admin
 from app.models import AuditEvent, GameServer, Node, NodeTask, User, ServerSubuser, BackupSchedule
-from app.schemas import LoginRequest, PasswordChange, MessageResponse, NodeCreate, NodeHeartbeat, NodeRead, NodeTaskResult, ServerAction, ServerCreate, ServerRead, TokenResponse, UserCreate, UserRead, ConsoleCommand, ServerFileRequest, MinecraftAction, BackupAction, VersionUpgrade, ServerMemberCreate, BackupScheduleCreate, BackupScheduleUpdate, BackupScheduleRead, ModManagerRequest, ServerAllocationCreate, ServerAllocationRead
+from app.schemas import LoginRequest, PasswordChange, MessageResponse, NodeCreate, NodeHeartbeat, NodeRead, NodeTaskResult, ServerAction, ServerCreate, ServerRead, TokenResponse, UserCreate, UserRead, ConsoleCommand, ServerFileRequest, MinecraftAction, BackupAction, VersionUpgrade, ServerMemberCreate, BackupScheduleCreate, BackupScheduleUpdate, BackupScheduleRead, ModManagerRequest, ServerAllocationCreate, ServerAllocationRead, ApiKeyCreate, ApiKeyRead
 from app.security import DUMMY_HASH, create_access_token, hash_password, verify_password
 
 router = APIRouter()
+
+
+@router.get('/auth/api-keys', response_model=list[ApiKeyRead])
+def list_api_keys(actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    rows = db.scalars(select(ApiKey).where(ApiKey.user_id == actor.id).order_by(ApiKey.created_at.desc())).all()
+    return rows
+
+@router.post('/auth/api-keys', status_code=status.HTTP_201_CREATED)
+def create_api_key(payload: ApiKeyCreate, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if getattr(actor, '_api_key_read_only', False):
+        raise HTTPException(status_code=403, detail='API keys cannot create or manage other API keys')
+    if actor.role == 'admin':
+        raise HTTPException(status_code=403, detail='Administrator API keys are disabled. Use an interactive administrator session.')
+    active = db.scalar(select(ApiKey.id).where(ApiKey.user_id == actor.id, ApiKey.revoked_at.is_(None)).limit(10))
+    if active is not None:
+        count = len(db.scalars(select(ApiKey.id).where(ApiKey.user_id == actor.id, ApiKey.revoked_at.is_(None))).all())
+        if count >= 10:
+            raise HTTPException(status_code=409, detail='A maximum of 10 active API keys is allowed')
+    token = 'lpgp_' + secrets.token_urlsafe(36)
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(days=payload.expires_days) if payload.expires_days else None
+    row = ApiKey(user_id=actor.id, name=payload.name.strip(), prefix=token[:12], token_hash=hashlib.sha256(token.encode()).hexdigest(), expires_at=expires)
+    db.add(row)
+    record_event(db, 'auth.api_key.create', actor, f'Created read-only API key {payload.name}')
+    db.commit()
+    db.refresh(row)
+    return {'api_key':token,'key':ApiKeyRead.model_validate(row)}
+
+@router.delete('/auth/api-keys/{key_id}', status_code=status.HTTP_204_NO_CONTENT)
+def revoke_api_key(key_id: int, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if getattr(actor, '_api_key_read_only', False):
+        raise HTTPException(status_code=403, detail='API keys cannot revoke other credentials')
+    row = db.scalar(select(ApiKey).where(ApiKey.id == key_id, ApiKey.user_id == actor.id))
+    if row is None:
+        raise HTTPException(status_code=404, detail='API key not found')
+    row.revoked_at = datetime.now(timezone.utc)
+    record_event(db, 'auth.api_key.revoke', actor, f'Revoked API key {row.prefix}')
+    db.commit()
 
 @router.post('/auth/login', response_model=TokenResponse)
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
@@ -338,6 +376,8 @@ def finish_node_task(task_id: int, payload: NodeTaskResult, x_node_token: str | 
 
 
 def server_permissions(server: GameServer, actor: User, db: Session) -> set[str]:
+    if getattr(actor, '_api_key_read_only', False):
+        return {'server.read','file.read','backup.read'}
     if actor.role == 'admin' or server.owner_id == actor.id:
         return {'server.read','control.console','control.start','control.stop','control.restart','file.read','file.write','backup.read','backup.create','backup.restore','server.manage'}
     membership = db.scalar(select(ServerSubuser).where(ServerSubuser.server_id == server.id, ServerSubuser.user_id == actor.id))
@@ -614,6 +654,8 @@ def get_server_task(server_id: int, task_id: int, actor: User = Depends(get_curr
     return {'id':task.id,'action':task.action,'status':task.status,'result':json.loads(task.result) if task.result else None,'created_at':task.created_at,'completed_at':task.completed_at}
 
 def require_server_owner(server_id: int, actor: User, db: Session) -> GameServer:
+    if getattr(actor, '_api_key_read_only', False):
+        raise HTTPException(status_code=403, detail='Read-only API keys cannot manage server ownership or team access')
     server = db.get(GameServer, server_id)
     if server is None:
         raise HTTPException(status_code=404, detail='Server not found')
