@@ -452,3 +452,34 @@ def test_personal_api_keys_are_read_only_and_revocable():
     key_id = made.json()['key']['id']
     assert client.delete(f'/api/v1/auth/api-keys/{key_id}', headers=customer_auth).status_code == 204
     assert client.get('/api/v1/auth/me', headers=key_headers).status_code == 401
+
+
+def test_sftp_access_is_created_and_revoked_through_node_tasks():
+    login = client.post('/api/v1/auth/login', json={'email':'admin@example.com','password':'Correct-Horse-123!'}).json()
+    admin = {'Authorization':f"Bearer {login['access_token']}"}
+    enrolled = client.post('/api/v1/admin/nodes', headers=admin, json={'name':'sftp-node','fqdn':'sftp.example.test'}).json()
+    node_headers = {'X-Node-Token':enrolled['token']}
+    client.post('/api/v1/nodes/heartbeat', headers=node_headers, json={
+        'cpu_percent':1,'memory_total':8*1024**3,'memory_used':1024**3,'disk_total':80*1024**3,'disk_used':5*1024**3
+    })
+    created = client.post('/api/v1/admin/servers', headers=admin, json={
+        'name':'SFTP SMP','node_id':enrolled['node']['id'],'memory_mb':1024,'cpu_limit':1
+    }).json()
+    provision = client.get('/api/v1/nodes/tasks', headers=node_headers).json()[0]
+    client.post(f"/api/v1/nodes/tasks/{provision['id']}/result", headers=node_headers, json={'docker_id':'docker-sftp'})
+    sid = created['id']
+    result = client.post(f'/api/v1/admin/servers/{sid}/sftp', headers=admin)
+    assert result.status_code == 202, result.text
+    assert result.json()['password']
+    assert result.json()['access']['host'] == 'sftp.example.test'
+    task = client.get('/api/v1/nodes/tasks', headers=node_headers).json()[0]
+    assert task['action'] == 'sftp_create'
+    client.post(f"/api/v1/nodes/tasks/{task['id']}/result", headers=node_headers, json={'data':{'status':'active'}})
+    current = client.get(f'/api/v1/admin/servers/{sid}/sftp', headers=admin)
+    assert current.status_code == 200 and current.json()['status'] == 'active'
+    deleted = client.delete(f'/api/v1/admin/servers/{sid}/sftp', headers=admin)
+    assert deleted.status_code == 202
+    remove_task = client.get('/api/v1/nodes/tasks', headers=node_headers).json()[0]
+    assert remove_task['action'] == 'sftp_delete'
+    client.post(f"/api/v1/nodes/tasks/{remove_task['id']}/result", headers=node_headers, json={'data':{'status':'removed'}})
+    assert client.get(f'/api/v1/admin/servers/{sid}/sftp', headers=admin).json() is None
