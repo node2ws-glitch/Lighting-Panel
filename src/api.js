@@ -20,6 +20,7 @@ export async function login(email, password) {
   sessionStorage.setItem(TOKEN_KEY, data.access_token);
   return data.user;
 }
+export const changePassword = (payload) => request('/auth/password', { method: 'POST', body: JSON.stringify(payload) });
 export const currentUser = () => request('/auth/me');
 export const logout = async () => { try { await request('/auth/logout', { method: 'POST' }); } finally { clearToken(); } };
 export const listUsers = () => request('/admin/users');
