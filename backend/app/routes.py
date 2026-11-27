@@ -67,7 +67,7 @@ def set_user_status(user_id: int, is_active: bool, actor: User = Depends(require
 
 @router.get('/admin/audit', response_model=list[dict])
 def list_audit(_: User = Depends(require_admin), db: Session = Depends(get_db)):
-    rows = db.execute(select(AuditEvent.id, AuditEvent.actor_id, AuditEvent.action, AuditEvent.detail, AuditEvent.created_at).order_by(AuditEvent.created_at.desc()).limit(200)).mappings().all()
+    rows = db.execute(select(AuditEvent.id, AuditEvent.actor_id, User.username.label('actor_username'), AuditEvent.action, AuditEvent.detail, AuditEvent.created_at).outerjoin(User, User.id == AuditEvent.actor_id).order_by(AuditEvent.created_at.desc()).limit(200)).mappings().all()
     return [dict(row) for row in rows]
 
 @router.get('/health', response_model=MessageResponse)
