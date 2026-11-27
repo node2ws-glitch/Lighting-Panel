@@ -566,7 +566,7 @@ def run_database_task(client, action, payload, server_id, server_container):
         return {'data':{'status':'active','internal_host':name,'internal_port':3306 if db_type == 'mariadb' else 5432}}
     except docker.errors.NotFound:
         pass
-    db_volume = client.volumes.create(name=volume_name,labels={LABEL_OWNER:'true','net.lightingpanel.database-id':str(database_id)})
+    db_volume = client.volumes.create(name=volume_name,labels={LABEL_OWNER:'true','net.lightingpanel.database-id':str(database_id),'net.lightingpanel.server-id':str(server_id)})
     if db_volume.attrs.get('Labels',{}).get(LABEL_OWNER) != 'true' or db_volume.attrs.get('Labels',{}).get('net.lightingpanel.database-id') != str(database_id):
         raise RuntimeError('Database volume ownership validation failed')
     env = {'MARIADB_DATABASE':database_name,'MARIADB_USER':username,'MARIADB_PASSWORD':password,'MARIADB_ROOT_PASSWORD':secrets.token_urlsafe(36)} if db_type == 'mariadb' else {'POSTGRES_DB':database_name,'POSTGRES_USER':username,'POSTGRES_PASSWORD':password}
@@ -581,6 +581,35 @@ def run_database_task(client, action, payload, server_id, server_container):
         restart_policy={'Name':'unless-stopped'},cap_drop=['NET_RAW','SYS_CHROOT','MKNOD'],
         security_opt=['no-new-privileges:true'])
     return {'data':{'status':'active','internal_host':name,'internal_port':internal_port,'docker_id':container.id}}
+
+
+def cleanup_server_resources(client, server_id):
+    server_id = str(int(server_id))
+    for container in client.containers.list(all=True):
+        labels = container.labels or {}
+        belongs = labels.get('net.lightingpanel.server-id') == server_id or labels.get('net.lightingpanel.sftp-server-id') == server_id
+        if belongs and labels.get(LABEL_OWNER) == 'true':
+            try:
+                container.remove(force=True)
+            except docker.errors.NotFound:
+                pass
+    for volume in client.volumes.list():
+        labels = volume.attrs.get('Labels',{}) or {}
+        belongs = labels.get('net.lightingpanel.server-id') == server_id or labels.get('net.lightingpanel.sftp-server-id') == server_id
+        if belongs and labels.get(LABEL_OWNER) == 'true':
+            try:
+                volume.remove(force=False)
+            except docker.errors.APIError as exc:
+                log.warning('Could not remove managed volume %s for server %s: %s',volume.name,server_id,exc)
+    network_name = f'lighting-server-net-{server_id}'
+    try:
+        network = client.networks.get(network_name)
+        labels = network.attrs.get('Labels',{}) or {}
+        if labels.get(LABEL_OWNER) == 'true' and labels.get('net.lightingpanel.server-id') == server_id:
+            network.remove()
+    except docker.errors.NotFound:
+        pass
+    return {'docker_id':None}
 
 def run_task(client, task):
     action = task.get('action')
@@ -628,13 +657,7 @@ def run_task(client, task):
         container = client.containers.get(name)
     except docker.errors.NotFound:
         if action == 'delete':
-            try:
-                volume = client.volumes.get(f'lighting-server-data-{server_id}')
-                if volume.attrs.get('Labels', {}).get(LABEL_OWNER) == 'true':
-                    volume.remove(force=False)
-            except docker.errors.NotFound:
-                pass
-            return {'docker_id':None}
+            return cleanup_server_resources(client, server_id)
         raise RuntimeError('Managed server container does not exist')
     if container.labels.get(LABEL_OWNER) != 'true' or container.labels.get('net.lightingpanel.server-id') != str(server_id):
         raise RuntimeError('Refusing to operate on a container not owned by Lighting Panel')
@@ -664,14 +687,7 @@ def run_task(client, task):
     elif action == 'restart':
         container.restart(timeout=30)
     elif action == 'delete':
-        container.remove(force=True)
-        try:
-            volume = client.volumes.get(f'lighting-server-data-{server_id}')
-            if volume.attrs.get('Labels', {}).get(LABEL_OWNER) == 'true':
-                volume.remove(force=False)
-        except docker.errors.NotFound:
-            pass
-        return {'docker_id':None}
+        return cleanup_server_resources(client, server_id)
     else:
         raise ValueError('Unsupported node task action')
     return {'docker_id':container.id}
