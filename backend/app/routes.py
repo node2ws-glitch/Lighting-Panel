@@ -8,8 +8,8 @@ from sqlalchemy.orm import Session
 from app.audit import record_event
 from app.database import get_db
 from app.dependencies import get_current_user, require_admin
-from app.models import AuditEvent, GameServer, Node, NodeTask, User, ServerSubuser
-from app.schemas import LoginRequest, PasswordChange, MessageResponse, NodeCreate, NodeHeartbeat, NodeRead, NodeTaskResult, ServerAction, ServerCreate, ServerRead, TokenResponse, UserCreate, UserRead, ConsoleCommand, ServerFileRequest, MinecraftAction, BackupAction, VersionUpgrade, ServerMemberCreate
+from app.models import AuditEvent, GameServer, Node, NodeTask, User, ServerSubuser, BackupSchedule
+from app.schemas import LoginRequest, PasswordChange, MessageResponse, NodeCreate, NodeHeartbeat, NodeRead, NodeTaskResult, ServerAction, ServerCreate, ServerRead, TokenResponse, UserCreate, UserRead, ConsoleCommand, ServerFileRequest, MinecraftAction, BackupAction, VersionUpgrade, ServerMemberCreate, BackupScheduleCreate, BackupScheduleUpdate, BackupScheduleRead
 from app.security import DUMMY_HASH, create_access_token, hash_password, verify_password
 
 router = APIRouter()
@@ -220,6 +220,56 @@ def server_action(server_id: int, payload: ServerAction, actor: User = Depends(g
     db.refresh(server)
     return server
 
+
+def backup_frequency_delta(frequency: str) -> timedelta:
+    return {'hourly': timedelta(hours=1), 'daily': timedelta(days=1), 'weekly': timedelta(days=7)}[frequency]
+
+@router.get('/admin/servers/{server_id}/backup-schedules', response_model=list[BackupScheduleRead])
+def list_backup_schedules(server_id: int, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    require_server_permission(server_id, actor, 'server.manage', db)
+    return list(db.scalars(select(BackupSchedule).where(BackupSchedule.server_id == server_id).order_by(BackupSchedule.created_at.desc())).all())
+
+@router.post('/admin/servers/{server_id}/backup-schedules', response_model=BackupScheduleRead, status_code=status.HTTP_201_CREATED)
+def create_backup_schedule(server_id: int, payload: BackupScheduleCreate, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    server = require_server_permission(server_id, actor, 'server.manage', db)
+    if server.status not in ('online', 'offline'):
+        raise HTTPException(status_code=409, detail='Server must be provisioned before scheduling backups')
+    now = datetime.now(timezone.utc)
+    schedule = BackupSchedule(server_id=server.id, created_by=actor.id, name=payload.name.strip(), frequency=payload.frequency,
+        retention=payload.retention, enabled=payload.enabled, next_run_at=now + backup_frequency_delta(payload.frequency))
+    db.add(schedule)
+    record_event(db, 'server.backup_schedule.create', actor, f'Created {payload.frequency} backup schedule for server {server.id}')
+    db.commit()
+    db.refresh(schedule)
+    return schedule
+
+@router.patch('/admin/servers/{server_id}/backup-schedules/{schedule_id}', response_model=BackupScheduleRead)
+def update_backup_schedule(server_id: int, schedule_id: int, payload: BackupScheduleUpdate, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    require_server_permission(server_id, actor, 'server.manage', db)
+    schedule = db.scalar(select(BackupSchedule).where(BackupSchedule.id == schedule_id, BackupSchedule.server_id == server_id))
+    if schedule is None:
+        raise HTTPException(status_code=404, detail='Backup schedule not found')
+    changes = payload.model_dump(exclude_unset=True)
+    for key, value in changes.items():
+        if value is not None:
+            setattr(schedule, key, value)
+    if 'frequency' in changes:
+        schedule.next_run_at = datetime.now(timezone.utc) + backup_frequency_delta(schedule.frequency)
+    record_event(db, 'server.backup_schedule.update', actor, f'Updated backup schedule {schedule.id} for server {server_id}')
+    db.commit()
+    db.refresh(schedule)
+    return schedule
+
+@router.delete('/admin/servers/{server_id}/backup-schedules/{schedule_id}', status_code=status.HTTP_204_NO_CONTENT)
+def delete_backup_schedule(server_id: int, schedule_id: int, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    require_server_permission(server_id, actor, 'server.manage', db)
+    schedule = db.scalar(select(BackupSchedule).where(BackupSchedule.id == schedule_id, BackupSchedule.server_id == server_id))
+    if schedule is None:
+        raise HTTPException(status_code=404, detail='Backup schedule not found')
+    db.delete(schedule)
+    record_event(db, 'server.backup_schedule.delete', actor, f'Deleted backup schedule {schedule_id} for server {server_id}')
+    db.commit()
+
 @router.get('/nodes/tasks')
 def claim_node_tasks(x_node_token: str | None = Header(default=None), db: Session = Depends(get_db)):
     node = authenticate_node(x_node_token, db)
@@ -229,6 +279,20 @@ def claim_node_tasks(x_node_token: str | None = Header(default=None), db: Sessio
     for stale in stale_tasks:
         stale.status = 'pending'
         stale.claimed_at = None
+    due_schedules = list(db.scalars(select(BackupSchedule).join(GameServer, GameServer.id == BackupSchedule.server_id)
+        .where(GameServer.node_id == node.id, GameServer.status.in_(['online', 'offline']), BackupSchedule.enabled.is_(True), BackupSchedule.next_run_at <= now)
+        .order_by(BackupSchedule.next_run_at).limit(20)).all())
+    for schedule in due_schedules:
+        active = db.scalar(select(NodeTask.id).where(NodeTask.server_id == schedule.server_id, NodeTask.action == 'backup_create',
+            NodeTask.status.in_(['pending', 'claimed'])).limit(1))
+        if active is None:
+            db.add(NodeTask(node_id=node.id, server_id=schedule.server_id, action='backup_create',
+                payload=json.dumps({'server_id': schedule.server_id, 'label': 'scheduled', 'schedule_id': schedule.id, 'retention': schedule.retention})))
+            schedule.last_run_at = now
+        schedule.next_run_at = schedule.next_run_at + backup_frequency_delta(schedule.frequency)
+        if schedule.next_run_at <= now:
+            schedule.next_run_at = now + backup_frequency_delta(schedule.frequency)
+    db.flush()
     tasks = list(db.scalars(select(NodeTask).where(NodeTask.node_id == node.id, NodeTask.status == 'pending').order_by(NodeTask.id).limit(5)).all())
     output = []
     for task in tasks:
