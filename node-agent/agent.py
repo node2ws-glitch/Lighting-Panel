@@ -516,7 +516,7 @@ def run_sftp_task(client, action, payload, server_id):
         volumes={f'lighting-server-data-{server_id}':{'bind':'/srv/sftpgo/data','mode':'rw'},
                  config_volume:{'bind':'/var/lib/sftpgo','mode':'rw'}},
         labels={LABEL_OWNER:'true','net.lightingpanel.sftp-server-id':str(server_id)},
-        restart_policy={'Name':'unless-stopped'},pids_limit=256,
+        restart_policy={'Name':'unless-stopped'},mem_limit='256m',nano_cpus=250000000,pids_limit=256,
         cap_drop=['NET_RAW','SYS_CHROOT','MKNOD'],security_opt=['no-new-privileges:true'])
     try:
         for _ in range(30):
