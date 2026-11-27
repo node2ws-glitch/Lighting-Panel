@@ -474,6 +474,7 @@ def test_sftp_access_is_created_and_revoked_through_node_tasks():
     assert result.json()['access']['host'] == 'sftp.example.test'
     task = client.get('/api/v1/nodes/tasks', headers=node_headers).json()[0]
     assert task['action'] == 'sftp_create'
+    assert 'password_encrypted' in task['payload'] and 'password' not in task['payload']
     client.post(f"/api/v1/nodes/tasks/{task['id']}/result", headers=node_headers, json={'data':{'status':'active'}})
     current = client.get(f'/api/v1/admin/servers/{sid}/sftp', headers=admin)
     assert current.status_code == 200 and current.json()['status'] == 'active'
@@ -507,6 +508,7 @@ def test_managed_database_service_lifecycle():
     assert result.json()['database']['internal_host'].startswith('lighting-db-')
     task = client.get('/api/v1/nodes/tasks', headers=node_headers).json()[0]
     assert task['action'] == 'database_create'
+    assert 'password_encrypted' in task['payload'] and 'password' not in task['payload']
     client.post(f"/api/v1/nodes/tasks/{task['id']}/result", headers=node_headers,
         json={'data':{'status':'active','internal_host':result.json()['database']['internal_host'],'internal_port':3306}})
     listing = client.get(f'/api/v1/admin/servers/{sid}/databases', headers=admin)
