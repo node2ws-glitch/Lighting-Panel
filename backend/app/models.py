@@ -129,3 +129,13 @@ class BackupSchedule(Base):
     next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class ServerAllocation(Base):
+    __tablename__ = 'server_allocations'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    server_id: Mapped[int] = mapped_column(ForeignKey('game_servers.id', ondelete='CASCADE'), nullable=False, index=True)
+    port: Mapped[int] = mapped_column(Integer, unique=True, nullable=False)
+    container_port: Mapped[int] = mapped_column(Integer, nullable=False)
+    protocol: Mapped[str] = mapped_column(String(8), default='tcp', nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
