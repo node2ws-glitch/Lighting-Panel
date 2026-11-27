@@ -242,18 +242,17 @@ def create_minecraft_container(client, server_id, version, memory_mb, cpu_limit,
         if key in ports:
             raise ValueError('Duplicate container port and protocol')
         ports[key] = ('0.0.0.0', host_port)
+    network = ensure_server_network(client, server_id)
     container = client.containers.run(
         IMAGE, name=container_name(server_id), detach=True,
         environment={'EULA':'TRUE','TYPE':str(server_type).upper(),'VERSION':version,'MEMORY':f'{int(memory_mb * 0.8)}M','TZ':'UTC'},
-        ports=ports,
+        ports=ports, network=network.name,
         volumes={f'lighting-server-data-{server_id}':{'bind':'/data','mode':'rw'}},
         mem_limit=f'{int(memory_mb)}m', nano_cpus=int(float(cpu_limit)*1_000_000_000),
         pids_limit=512, init=True, tty=True, stdin_open=True,
         labels={LABEL_OWNER:'true','net.lightingpanel.server-id':str(server_id)},
         restart_policy={'Name':'unless-stopped'}, cap_drop=['NET_RAW','SYS_CHROOT','MKNOD'],
         security_opt=['no-new-privileges:true'])
-    network = ensure_server_network(client, server_id)
-    network.connect(container, aliases=[f'lighting-server-{server_id}'])
     return container
 
 def upgrade_minecraft_server(client, server_id, container, payload):
@@ -561,7 +560,6 @@ def run_database_task(client, action, payload, server_id, server_container):
         labels={LABEL_OWNER:'true','net.lightingpanel.database-id':str(database_id),'net.lightingpanel.server-id':str(server_id)},
         restart_policy={'Name':'unless-stopped'},cap_drop=['NET_RAW','SYS_CHROOT','MKNOD'],
         security_opt=['no-new-privileges:true'])
-    network.connect(container,aliases=[name])
     return {'data':{'status':'active','internal_host':name,'internal_port':internal_port,'docker_id':container.id}}
 
 def run_task(client, task):
@@ -594,6 +592,11 @@ def run_task(client, task):
             connected = existing.attrs.get('NetworkSettings',{}).get('Networks',{}) or {}
             if network.name not in connected:
                 network.connect(existing, aliases=[f'lighting-server-{server_id}'])
+            if 'bridge' in connected:
+                try:
+                    client.networks.get('bridge').disconnect(existing, force=True)
+                except docker.errors.APIError:
+                    pass
             return {'docker_id': existing.id}
         except docker.errors.NotFound:
             pass
