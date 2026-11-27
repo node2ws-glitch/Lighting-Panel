@@ -531,6 +531,11 @@ def run_database_task(client, action, payload, server_id, server_container):
     connected = server_container.attrs.get('NetworkSettings',{}).get('Networks',{}) or {}
     if network.name not in connected:
         network.connect(server_container, aliases=[f'lighting-server-{server_id}'])
+    if 'bridge' in connected:
+        try:
+            client.networks.get('bridge').disconnect(server_container, force=True)
+        except docker.errors.APIError:
+            pass
     if action == 'database_delete':
         try:
             container = client.containers.get(name)
