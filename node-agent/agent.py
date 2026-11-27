@@ -8,6 +8,7 @@ import time
 import tarfile
 import shutil
 import uuid
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -218,10 +219,10 @@ def restore_server_backup(client, server_id, container, mountpoint, backup_id):
         container.start()
     return {'restored_backup':backup_id,'previous_state':'running' if was_running else 'stopped'}
 
-def create_minecraft_container(client, server_id, version, memory_mb, cpu_limit, port):
+def create_minecraft_container(client, server_id, version, memory_mb, cpu_limit, port, server_type='paper'):
     return client.containers.run(
         IMAGE, name=container_name(server_id), detach=True,
-        environment={'EULA':'TRUE','TYPE':'PAPER','VERSION':version,'MEMORY':f'{int(memory_mb * 0.8)}M','TZ':'UTC'},
+        environment={'EULA':'TRUE','TYPE':str(server_type).upper(),'VERSION':version,'MEMORY':f'{int(memory_mb * 0.8)}M','TZ':'UTC'},
         ports={'25565/tcp':('0.0.0.0',int(port))},
         volumes={f'lighting-server-data-{server_id}':{'bind':'/data','mode':'rw'}},
         mem_limit=f'{int(memory_mb)}m', nano_cpus=int(float(cpu_limit)*1_000_000_000),
@@ -234,7 +235,9 @@ def upgrade_minecraft_server(client, server_id, container, payload):
     version = str(payload.get('version',''))
     if not __import__('re').fullmatch(r'\d+\.\d+(\.\d+)?', version):
         raise ValueError('Choose a valid Minecraft release version')
-    memory_mb = int(payload.get('memory_mb',0)); cpu_limit = float(payload.get('cpu_limit',0)); port = int(payload.get('port',0))
+    memory_mb = int(payload.get('memory_mb',0)); cpu_limit = float(payload.get('cpu_limit',0)); port = int(payload.get('port',0)); server_type = str(payload.get('server_type', 'paper')).lower()
+    if server_type not in ('paper','fabric','forge'):
+        raise ValueError('Unsupported Minecraft server type')
     if not 512 <= memory_mb <= 16384 or not 0.5 <= cpu_limit <= 16 or not 25565 <= port <= 25999:
         raise ValueError('Server resource settings are invalid')
     _, mountpoint = server_volume(client, server_id)
@@ -246,11 +249,11 @@ def upgrade_minecraft_server(client, server_id, container, payload):
         create_server_backup(client, server_id, mountpoint, label='pre-upgrade')
         container.remove(v=False)
         client.images.pull(IMAGE)
-        replacement = create_minecraft_container(client, server_id, version, memory_mb, cpu_limit, port)
+        replacement = create_minecraft_container(client, server_id, version, memory_mb, cpu_limit, port, server_type)
         return {'version':version,'docker_id':replacement.id,'backup_created':True}
     except Exception:
         try:
-            create_minecraft_container(client, server_id, old_version, memory_mb, cpu_limit, port)
+            create_minecraft_container(client, server_id, old_version, memory_mb, cpu_limit, port, server_type)
         except Exception:
             log.exception('Could not recreate previous Minecraft version after failed upgrade')
         raise
@@ -283,6 +286,93 @@ def run_backup_task(client, action, payload, server_id, container):
         return restore_server_backup(client, server_id, container, mountpoint, payload.get('backup_id',''))
     raise ValueError('Unsupported backup operation')
 
+
+def run_mod_manager(client, server_id, container, payload):
+    kind = str(payload.get('kind', ''))
+    action = str(payload.get('action', ''))
+    if kind not in ('plugin', 'mod') or action not in ('list', 'install', 'remove'):
+        raise ValueError('Unsupported mod manager operation')
+    _, mountpoint = server_volume(client, server_id)
+    folder = 'plugins' if kind == 'plugin' else 'mods'
+    target_dir = (mountpoint / folder).resolve()
+    if target_dir.parent != mountpoint.resolve():
+        raise ValueError('Invalid managed directory')
+    target_dir.mkdir(mode=0o755, exist_ok=True)
+    if action == 'list':
+        return {'kind':kind,'files':[{'filename':p.name,'size_bytes':p.stat().st_size} for p in sorted(target_dir.glob('*.jar')) if p.is_file() and not p.is_symlink()][:200]}
+    filename = str(payload.get('filename') or '')
+    if not __import__('re').fullmatch(r'[A-Za-z0-9_. -]{1,120}\.jar', filename):
+        raise ValueError('Invalid JAR filename')
+    target = (target_dir / filename).resolve()
+    if target.parent != target_dir:
+        raise ValueError('Invalid JAR path')
+    was_running = container.status == 'running'
+    if was_running:
+        container.stop(timeout=30)
+    try:
+        if action == 'remove':
+            if not target.is_file() or target.is_symlink():
+                raise ValueError('JAR file does not exist')
+            target.unlink()
+            return {'kind':kind,'removed':filename,'files':[{'filename':p.name,'size_bytes':p.stat().st_size} for p in target_dir.glob('*.jar') if p.is_file() and not p.is_symlink()][:200]}
+        url = str(payload.get('url') or '')
+        allowed_hosts = {'cdn.modrinth.com','hangarcdn.papermc.io','mediafilez.forgecdn.net','edge.forgecdn.net'}
+        if not url.startswith('https://'):
+            raise ValueError('Only HTTPS downloads are accepted')
+        import urllib.parse
+        current = url
+        response = None
+        for _ in range(4):
+            parsed = urllib.parse.urlparse(current)
+            if parsed.scheme != 'https' or parsed.hostname not in allowed_hosts or parsed.username or parsed.password:
+                raise ValueError('Download host is not on the trusted Modrinth, Hangar, or CurseForge CDN allowlist')
+            response = requests.get(current, stream=True, timeout=(10,30), allow_redirects=False)
+            if response.is_redirect:
+                location = response.headers.get('Location')
+                response.close()
+                if not location:
+                    raise ValueError('Download redirect did not include a location')
+                current = urllib.parse.urljoin(current, location)
+                continue
+            response.raise_for_status()
+            break
+        else:
+            raise ValueError('Too many download redirects')
+        length = int(response.headers.get('Content-Length') or 0)
+        if length > 100 * 1024 * 1024:
+            response.close()
+            raise ValueError('JAR downloads are limited to 100 MB')
+        temporary = target_dir / ('.' + uuid.uuid4().hex + '.part')
+        total = 0
+        try:
+            with temporary.open('wb') as output:
+                for chunk in response.iter_content(1024 * 256):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > 100 * 1024 * 1024:
+                        raise ValueError('JAR download exceeded the 100 MB limit')
+                    output.write(chunk)
+            if not zipfile.is_zipfile(temporary):
+                raise ValueError('Downloaded file is not a valid Java archive')
+            with zipfile.ZipFile(temporary) as jar:
+                names = set(jar.namelist())
+                markers = {'plugin.yml','paper-plugin.yml'} if kind == 'plugin' else {'fabric.mod.json','quilt.mod.json','META-INF/mods.toml'}
+                if not any(name in names for name in markers):
+                    raise ValueError('JAR does not contain a recognized '+kind+' metadata file')
+                if len(names) > 50000 or sum(item.file_size for item in jar.infolist()) > 300 * 1024 * 1024:
+                    raise ValueError('JAR archive exceeds safety limits')
+            temporary.replace(target)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
+        finally:
+            response.close()
+        return {'kind':kind,'installed':filename,'bytes':total,'files':[{'filename':p.name,'size_bytes':p.stat().st_size} for p in target_dir.glob('*.jar') if p.is_file() and not p.is_symlink()][:200]}
+    finally:
+        if was_running:
+            container.start()
+
 def run_task(client, task):
     action = task.get('action')
     payload = task.get('payload') or {}
@@ -297,6 +387,9 @@ def run_task(client, task):
         memory_mb = int(payload.get('memory_mb', 0))
         cpu_limit = float(payload.get('cpu_limit', 0))
         port = int(payload.get('port', 0))
+        server_type = str(payload.get('server_type', 'paper')).lower()
+        if server_type not in ('paper','fabric','forge'):
+            raise ValueError('Unsupported Minecraft server type')
         if not 512 <= memory_mb <= 16384 or not 0.5 <= cpu_limit <= 16 or not 25565 <= port <= 25999:
             raise ValueError('Server resource or port values are outside allowed limits')
         try:
@@ -314,7 +407,7 @@ def run_task(client, task):
             IMAGE,
             name=name,
             detach=True,
-            environment={'EULA':'TRUE','TYPE':'PAPER','VERSION':version,'MEMORY':f'{int(memory_mb * 0.8)}M','TZ':'UTC'},
+            environment={'EULA':'TRUE','TYPE':server_type.upper(),'VERSION':version,'MEMORY':f'{int(memory_mb * 0.8)}M','TZ':'UTC'},
             ports={'25565/tcp':('0.0.0.0',port)},
             volumes={volume:{'bind':'/data','mode':'rw'}},
             mem_limit=f'{memory_mb}m',
@@ -343,6 +436,8 @@ def run_task(client, task):
         raise RuntimeError('Managed server container does not exist')
     if container.labels.get(LABEL_OWNER) != 'true' or container.labels.get('net.lightingpanel.server-id') != str(server_id):
         raise RuntimeError('Refusing to operate on a container not owned by Lighting Panel')
+    if action == 'mod_manager':
+        return {'data':run_mod_manager(client, server_id, container, payload)}
     if action in ('backup_create','backup_list','backup_restore'):
         return {'data':run_backup_task(client, action, payload, server_id, container)}
     if action == 'version_upgrade':
