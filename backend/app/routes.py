@@ -8,8 +8,8 @@ from sqlalchemy.orm import Session
 from app.audit import record_event
 from app.database import get_db
 from app.dependencies import get_current_user, require_admin
-from app.models import AuditEvent, GameServer, Node, NodeTask, User, ServerSubuser, BackupSchedule, ServerAllocation, ApiKey, SftpAccess
-from app.schemas import LoginRequest, PasswordChange, MessageResponse, NodeCreate, NodeHeartbeat, NodeRead, NodeTaskResult, ServerAction, ServerCreate, ServerRead, TokenResponse, UserCreate, UserRead, ConsoleCommand, ServerFileRequest, MinecraftAction, BackupAction, VersionUpgrade, ServerMemberCreate, BackupScheduleCreate, BackupScheduleUpdate, BackupScheduleRead, ModManagerRequest, ServerAllocationCreate, ServerAllocationRead, ApiKeyCreate, ApiKeyRead, SftpAccessRead
+from app.models import AuditEvent, GameServer, Node, NodeTask, User, ServerSubuser, BackupSchedule, ServerAllocation, ApiKey, SftpAccess, DatabaseService
+from app.schemas import LoginRequest, PasswordChange, MessageResponse, NodeCreate, NodeHeartbeat, NodeRead, NodeTaskResult, ServerAction, ServerCreate, ServerRead, TokenResponse, UserCreate, UserRead, ConsoleCommand, ServerFileRequest, MinecraftAction, BackupAction, VersionUpgrade, ServerMemberCreate, BackupScheduleCreate, BackupScheduleUpdate, BackupScheduleRead, ModManagerRequest, ServerAllocationCreate, ServerAllocationRead, ApiKeyCreate, ApiKeyRead, SftpAccessRead, DatabaseCreate, DatabaseServiceRead
 from app.security import DUMMY_HASH, create_access_token, hash_password, verify_password
 
 router = APIRouter()
@@ -352,7 +352,7 @@ def finish_node_task(task_id: int, payload: NodeTaskResult, x_node_token: str | 
     task.status = 'failed' if payload.error else 'completed'
     task.result = json.dumps({'docker_id':payload.docker_id,'error':payload.error,'data':payload.data})
     task.completed_at = datetime.now(timezone.utc)
-    if task.server_id and task.action in ('provision','start','stop','restart','delete','version_upgrade','allocation_update','sftp_create','sftp_delete'):
+    if task.server_id and task.action in ('provision','start','stop','restart','delete','version_upgrade','allocation_update','sftp_create','sftp_delete','database_create','database_delete'):
         server = db.get(GameServer, task.server_id)
         if server:
             server.docker_id = payload.docker_id or server.docker_id
@@ -378,6 +378,15 @@ def finish_node_task(task_id: int, payload: NodeTaskResult, x_node_token: str | 
                         access.status = 'active'
                     else:
                         db.delete(access)
+            elif task.action in ('database_create','database_delete'):
+                database = db.get(DatabaseService, int(json.loads(task.payload).get('database_id', 0)))
+                if database is not None:
+                    if payload.error:
+                        database.status = 'error'
+                    elif task.action == 'database_create':
+                        database.status = 'active'
+                    else:
+                        db.delete(database)
             else:
                 server.status = 'online'
     db.commit()
@@ -532,6 +541,70 @@ def queue_allocation_reconfigure(server: GameServer, node: Node, db: Session):
     server.status = 'starting'
     return task
 
+
+
+@router.get('/admin/servers/{server_id}/databases', response_model=list[DatabaseServiceRead])
+def list_server_databases(server_id: int, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    server = require_server_permission(server_id, actor, 'server.manage', db)
+    node = db.get(Node, server.node_id)
+    rows = db.scalars(select(DatabaseService).where(DatabaseService.server_id == server_id).order_by(DatabaseService.created_at.desc())).all()
+    return [{'id':item.id,'server_id':item.server_id,'db_type':item.db_type,'database_name':item.database_name,
+        'username':item.username,'host':node.fqdn if node else 'Unavailable',
+        'internal_host':f'lpgp-db-{item.id}','port':item.port,'internal_port':3306 if item.db_type == 'mariadb' else 5432,
+        'status':item.status,'created_at':item.created_at} for item in rows]
+
+@router.post('/admin/servers/{server_id}/databases', status_code=status.HTTP_202_ACCEPTED)
+def create_server_database(server_id: int, payload: DatabaseCreate, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    server = require_server_permission(server_id, actor, 'server.manage', db)
+    node = db.get(Node, server.node_id)
+    if node is None or not node.is_enabled or not node_is_recent(node):
+        raise HTTPException(status_code=409, detail='Server node is offline')
+    if server.status not in ('online','offline'):
+        raise HTTPException(status_code=409, detail='Wait for the server to finish its current operation')
+    existing = db.scalars(select(DatabaseService).where(DatabaseService.server_id == server_id)).all()
+    if len(existing) >= 3:
+        raise HTTPException(status_code=409, detail='A server can have at most three managed databases')
+    if any(item.database_name == payload.database_name or item.username == payload.username for item in existing):
+        raise HTTPException(status_code=409, detail='Database name or username is already used on this server')
+    used = set(db.scalars(select(DatabaseService.port)).all()) | set(db.scalars(select(GameServer.allocation_port)).all()) | set(db.scalars(select(ServerAllocation.port)).all()) | set(db.scalars(select(SftpAccess.port)).all())
+    port = next((candidate for candidate in range(32000,33000) if candidate not in used),None)
+    if port is None:
+        raise HTTPException(status_code=409, detail='No database ports are available')
+    password = secrets.token_urlsafe(32)
+    database = DatabaseService(server_id=server.id,node_id=node.id,db_type=payload.db_type,database_name=payload.database_name,
+        username=payload.username,password_hash=hash_password(password),port=port,status='provisioning')
+    db.add(database)
+    db.flush()
+    task = NodeTask(node_id=node.id,server_id=server.id,action='database_create',payload=json.dumps({
+        'server_id':server.id,'database_id':database.id,'db_type':database.db_type,'database_name':database.database_name,
+        'username':database.username,'password':password,'port':port
+    }))
+    db.add(task)
+    record_event(db,'server.database.create',actor,f'Queued {payload.db_type} database {payload.database_name} for server {server.id}')
+    db.commit()
+    db.refresh(database)
+    return {'task_id':task.id,'status':task.status,'password':password,'database':{
+        'id':database.id,'server_id':server.id,'db_type':database.db_type,'database_name':database.database_name,
+        'username':database.username,'host':node.fqdn,'internal_host':f'lpgp-db-{database.id}',
+        'port':database.port,'internal_port':3306 if database.db_type == 'mariadb' else 5432,'status':database.status,
+        'created_at':database.created_at}}
+
+@router.delete('/admin/servers/{server_id}/databases/{database_id}', status_code=status.HTTP_202_ACCEPTED)
+def delete_server_database(server_id: int, database_id: int, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    server = require_server_permission(server_id, actor, 'server.manage', db)
+    database = db.scalar(select(DatabaseService).where(DatabaseService.id == database_id, DatabaseService.server_id == server_id))
+    if database is None:
+        raise HTTPException(status_code=404, detail='Database not found')
+    node = db.get(Node, server.node_id)
+    if node is None or not node.is_enabled or not node_is_recent(node):
+        raise HTTPException(status_code=409, detail='Server node is offline')
+    task = NodeTask(node_id=node.id,server_id=server.id,action='database_delete',payload=json.dumps({'server_id':server.id,'database_id':database.id}))
+    database.status = 'deleting'
+    db.add(task)
+    record_event(db,'server.database.delete',actor,f'Queued database deletion for server {server.id}')
+    db.commit()
+    db.refresh(task)
+    return {'task_id':task.id,'status':task.status}
 
 @router.get('/admin/servers/{server_id}/sftp', response_model=SftpAccessRead | None)
 def get_server_sftp(server_id: int, actor: User = Depends(get_current_user), db: Session = Depends(get_db)):
