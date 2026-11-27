@@ -114,3 +114,17 @@ class ProcessedBillingWebhook(Base):
     stripe_event_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
     event_type: Mapped[str] = mapped_column(String(128), nullable=False)
     processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class BackupSchedule(Base):
+    __tablename__ = 'backup_schedules'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    server_id: Mapped[int] = mapped_column(ForeignKey('game_servers.id', ondelete='CASCADE'), nullable=False, index=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    frequency: Mapped[str] = mapped_column(String(16), nullable=False)
+    retention: Mapped[int] = mapped_column(Integer, default=7, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
