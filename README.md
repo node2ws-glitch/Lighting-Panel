@@ -29,7 +29,7 @@ The server workspace includes:
 - Owner-managed server team access with API-enforced per-server permissions.
 - Live node telemetry, administrative audit events, operational counters and optional Stripe customer billing.
 
-This remains an early single-node runtime, not a production-hardened Pterodactyl replacement. Per-container CPU/RAM telemetry, automatic container health reconciliation, SFTP, plugin/mod installation, schedules, database provisioning, multi-allocation management, disk quotas, image update policy, firewall automation, and node-token rotation are not implemented. Stripe is optional hosting-customer billing and never activates LPGP itself. Do not expose this deployment to untrusted tenants until the remaining isolation and operational controls are implemented.
+This remains an early single-node runtime, not a production-hardened Pterodactyl replacement. Per-container CPU/RAM telemetry, automatic container health reconciliation, SFTP, plugin/mod installation, schedules, database provisioning, multi-allocation management, disk quotas, image update policy, firewall automation are not implemented. Node credentials can be rotated by an administrator; the new token is shown once and must be installed on the VPS agent before it reconnects. Stripe is optional hosting-customer billing and never activates LPGP itself. Do not expose this deployment to untrusted tenants until the remaining isolation and operational controls are implemented.
 
 ## Phase 6 — Console and file manager
 
