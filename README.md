@@ -167,7 +167,7 @@ SFTP service exposure, database container provisioning, multi-allocation lifecyc
 - **Multi-allocation support:** each server can have up to 10 additional TCP/UDP host-to-container port mappings. Updating mappings queues a node task which safely recreates the managed container while retaining its persistent data volume. Extra container ports must be used by a plugin or service configured to listen on those ports; adding a mapping alone does not make Minecraft listen on it.
 
 
-- **Per-server SFTP:** an isolated SFTPGo container is provisioned for each server, mounting only that server's managed data volume. The panel creates a one-time password, stores only its hash in the SFTP access record, and exposes a dedicated TCP port. Operators must allow the assigned SFTP port range (31000–31999) in their VPS firewall. The SFTPGo admin API is not published on the host.
+- **Per-server SFTP:** an isolated SFTPGo container and private bridge network are provisioned for each server, mounting only that server's managed data volume. The panel creates a one-time password, stores only its hash in the SFTP access record, and exposes a dedicated TCP port. Operators must allow the assigned SFTP port range (31000–31999) in their VPS firewall. The SFTPGo admin API is not published on the host.
 - **Personal API keys:** non-admin accounts can create, list, and revoke expiring read-only API keys. Tokens are hashed in the panel database, shown once, and cannot perform server control or administrative actions. Administrator API keys are intentionally disabled.
 
 
