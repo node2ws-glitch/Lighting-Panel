@@ -190,7 +190,7 @@ def create_server(payload: ServerCreate, actor: User = Depends(require_admin), d
     db.add(server)
     db.flush()
     task = NodeTask(node_id=node.id, server_id=server.id, action='provision',
-        payload=json.dumps({'server_id':server.id,'name':server.name,'version':server.version,'server_type':server.server_type,'memory_mb':server.memory_mb,'cpu_limit':server.cpu_limit,'port':server.allocation_port,'server_type':server.server_type}))
+        payload=json.dumps({'server_id':server.id,'name':server.name,'version':server.version,'server_type':server.server_type,'memory_mb':server.memory_mb,'cpu_limit':server.cpu_limit,'port':server.allocation_port}))
     db.add(task)
     record_event(db, 'admin.server.create', actor, f'Queued server {server.id} on node {node.name}')
     db.commit()
@@ -289,7 +289,10 @@ def claim_node_tasks(x_node_token: str | None = Header(default=None), db: Sessio
             db.add(NodeTask(node_id=node.id, server_id=schedule.server_id, action='backup_create',
                 payload=json.dumps({'server_id': schedule.server_id, 'label': 'scheduled', 'schedule_id': schedule.id, 'retention': schedule.retention})))
             schedule.last_run_at = now
-        schedule.next_run_at = schedule.next_run_at + backup_frequency_delta(schedule.frequency)
+        next_run = schedule.next_run_at
+        if next_run.tzinfo is None:
+            next_run = next_run.replace(tzinfo=timezone.utc)
+        schedule.next_run_at = next_run + backup_frequency_delta(schedule.frequency)
         if schedule.next_run_at <= now:
             schedule.next_run_at = now + backup_frequency_delta(schedule.frequency)
     db.flush()
