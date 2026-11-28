@@ -499,19 +499,33 @@ def upgrade_minecraft_server(client, server_id, container, payload):
     _, mountpoint = server_volume(client, server_id)
     old_version = str(payload.get('previous_version','LATEST'))
     was_running = container.status == 'running'
+    original_name = container.name
+    temporary_name = f'{original_name}-upgrade-{uuid.uuid4().hex[:8]}'
     if was_running:
         container.stop(timeout=30)
+    replacement = None
     try:
         create_server_backup(client, server_id, mountpoint, label='pre-upgrade')
-        container.remove(v=False)
+        container.rename(temporary_name)
         client.images.pull(IMAGE)
         replacement = create_minecraft_container(client, server_id, version, memory_mb, cpu_limit, port, server_type)
-        return {'version':version,'docker_id':replacement.id,'backup_created':True}
+        if not was_running:
+            replacement.stop(timeout=30)
+        container.remove(force=True, v=False)
+        return {'version':version,'docker_id':replacement.id,'backup_created':True,
+            'status':'online' if was_running else 'offline'}
     except Exception:
+        if replacement is not None:
+            try:
+                replacement.remove(force=True, v=False)
+            except Exception:
+                log.exception('Could not remove failed replacement container for server %s', server_id)
         try:
-            create_minecraft_container(client, server_id, old_version, memory_mb, cpu_limit, port, server_type)
+            container.rename(original_name)
+            if was_running:
+                container.start()
         except Exception:
-            log.exception('Could not recreate previous Minecraft version after failed upgrade')
+            log.exception('Could not restore the previous Minecraft container after failed upgrade')
         raise
 
 def run_backup_task(client, action, payload, server_id, container):
@@ -644,18 +658,32 @@ def reconfigure_server_allocations(client, server_id, container, payload):
         raise ValueError('Too many additional allocations')
     _, mountpoint = server_volume(client, server_id)
     was_running = container.status == 'running'
+    original_name = container.name
+    temporary_name = f'{original_name}-alloc-{uuid.uuid4().hex[:8]}'
     if was_running:
         container.stop(timeout=30)
+    replacement = None
     try:
-        container.remove(v=False)
+        container.rename(temporary_name)
         replacement = create_minecraft_container(client, server_id, str(payload.get('version','LATEST')),
             int(payload.get('memory_mb',1024)), float(payload.get('cpu_limit',1)),
             int(primary['port']), str(payload.get('server_type','paper')), extra)
         if not was_running:
             replacement.stop(timeout=30)
+        container.remove(force=True, v=False)
         return {'docker_id':replacement.id,'data':{'status':'online' if was_running else 'offline','allocations':len(allocations)}}
     except Exception:
-        log.exception('Allocation reconfiguration failed for server %s', server_id)
+        if replacement is not None:
+            try:
+                replacement.remove(force=True, v=False)
+            except Exception:
+                log.exception('Could not remove failed allocation replacement for server %s', server_id)
+        try:
+            container.rename(original_name)
+            if was_running:
+                container.start()
+        except Exception:
+            log.exception('Could not restore server container after allocation reconfiguration failure')
         raise
 
 
