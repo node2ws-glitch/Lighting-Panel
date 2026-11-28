@@ -370,6 +370,8 @@ def test_backup_schedule_creation_and_due_dispatch():
     client.post(f"/api/v1/nodes/tasks/{retry_task['id']}/result", headers=node_headers, json={'error':'temporary storage error'})
     retried = client.get(f'/api/v1/admin/servers/{sid}/backup-schedules', headers=admin).json()[0]
     retry_at = datetime.fromisoformat(retried['next_run_at'].replace('Z','+00:00'))
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=timezone.utc)
     assert retry_at > datetime.now(timezone.utc) + timedelta(minutes=4)
     assert client.delete(f"/api/v1/admin/servers/{sid}/backup-schedules/{schedule.json()['id']}", headers=admin).status_code == 204
 
