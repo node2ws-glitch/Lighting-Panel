@@ -1102,8 +1102,18 @@ def main():
                     log.info('Completed node task %s (%s)', task['id'], task['action'])
                 except Exception as exc:
                     log.exception('Node task %s failed', task.get('id'))
+                    failure = {'error':str(exc)[:950]}
+                    if task.get('action') in ('version_upgrade','allocation_update'):
+                        failed_server_id = int((task.get('payload') or {}).get('server_id') or task.get('server_id') or 0)
+                        if failed_server_id > 0:
+                            try:
+                                recovered = client.containers.get(container_name(failed_server_id))
+                                if recovered.labels.get(LABEL_OWNER) == 'true' and recovered.labels.get('net.lightingpanel.server-id') == str(failed_server_id):
+                                    failure['data'] = {'status':'online' if recovered.status == 'running' else 'offline'}
+                            except docker.errors.NotFound:
+                                pass
                     try:
-                        report_result(session, endpoint, task['id'], {'error':str(exc)[:950]})
+                        report_result(session, endpoint, task['id'], failure)
                     except requests.RequestException:
                         log.exception('Could not report task failure')
         except requests.RequestException as exc:
