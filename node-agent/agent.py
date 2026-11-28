@@ -757,25 +757,31 @@ def run_sftp_task(client, action, payload, server_id):
     name = f'lighting-sftp-{int(server_id)}'
     config_volume = f'lighting-sftp-config-{int(server_id)}'
     if action == 'sftp_delete':
-        try:
-            container = client.containers.get(name)
-            if container.labels.get(LABEL_OWNER) != 'true' or container.labels.get('net.lightingpanel.sftp-server-id') != str(server_id):
-                raise RuntimeError('Refusing to remove an unmanaged SFTP container')
-            container.remove(force=True)
-        except docker.errors.NotFound:
-            pass
+        volume = None
+        container = None
         try:
             volume = client.volumes.get(config_volume)
             labels = volume.attrs.get('Labels', {}) or {}
             if labels.get(LABEL_OWNER) != 'true' or labels.get('net.lightingpanel.sftp-server-id') != str(server_id):
                 raise RuntimeError('Refusing to remove an unmanaged SFTP config volume')
-            volume.remove(force=False)
         except docker.errors.NotFound:
             pass
         try:
+            container = client.containers.get(name)
+            if container.labels.get(LABEL_OWNER) != 'true' or container.labels.get('net.lightingpanel.sftp-server-id') != str(server_id):
+                raise RuntimeError('Refusing to remove an unmanaged SFTP container')
+        except docker.errors.NotFound:
+            pass
+        if container is not None:
+            container.remove(force=True)
+        if volume is not None:
+            volume.remove(force=False)
+        try:
             network = client.networks.get(f'lighting-sftp-net-{server_id}')
-            if network.attrs.get('Labels',{}).get(LABEL_OWNER) == 'true' and network.attrs.get('Labels',{}).get('net.lightingpanel.sftp-server-id') == str(server_id):
-                network.remove()
+            labels = network.attrs.get('Labels',{}) or {}
+            if labels.get(LABEL_OWNER) != 'true' or labels.get('net.lightingpanel.sftp-server-id') != str(server_id):
+                raise RuntimeError('Refusing to remove an unmanaged SFTP network')
+            network.remove()
         except docker.errors.NotFound:
             pass
         return {'data':{'status':'removed'}}
@@ -787,25 +793,29 @@ def run_sftp_task(client, action, payload, server_id):
     password = decrypt_node_secret(payload)
     if not 31000 <= port <= 31999 or not __import__('re').fullmatch(r'lpgp[0-9]{1,10}',username) or len(password) < 32:
         raise ValueError('SFTP provisioning parameters are invalid')
+    old_config = None
+    existing = None
     try:
         old_config = client.volumes.get(config_volume)
         config_labels = old_config.attrs.get('Labels',{}) or {}
         if config_labels.get(LABEL_OWNER) != 'true' or config_labels.get('net.lightingpanel.sftp-server-id') != str(server_id):
             raise RuntimeError('SFTP config volume name collision; refusing to mount an unmanaged volume')
-        old_config.remove(force=False)
     except docker.errors.NotFound:
         pass
-    config = client.volumes.create(name=config_volume,labels={LABEL_OWNER:'true','net.lightingpanel.sftp-server-id':str(server_id)})
-    config_labels = config.attrs.get('Labels',{}) or {}
-    if config_labels.get(LABEL_OWNER) != 'true' or config_labels.get('net.lightingpanel.sftp-server-id') != str(server_id):
-        raise RuntimeError('SFTP config volume ownership validation failed')
     try:
         existing = client.containers.get(name)
         if existing.labels.get(LABEL_OWNER) != 'true' or existing.labels.get('net.lightingpanel.sftp-server-id') != str(server_id):
             raise RuntimeError('SFTP container name collision; refusing to modify an unmanaged container')
-        existing.remove(force=True)
     except docker.errors.NotFound:
         pass
+    if existing is not None:
+        existing.remove(force=True)
+    if old_config is not None:
+        old_config.remove(force=False)
+    config = client.volumes.create(name=config_volume,labels={LABEL_OWNER:'true','net.lightingpanel.sftp-server-id':str(server_id)})
+    config_labels = config.attrs.get('Labels',{}) or {}
+    if config_labels.get(LABEL_OWNER) != 'true' or config_labels.get('net.lightingpanel.sftp-server-id') != str(server_id):
+        raise RuntimeError('SFTP config volume ownership validation failed')
     sftp_network = ensure_sftp_network(client, server_id)
     admin_user = 'lpgp-admin'
     admin_password = __import__('hashlib').sha256((os.getenv('NODE_TOKEN','') + ':lpgp-sftp-admin:' + str(server_id)).encode()).hexdigest()
@@ -882,21 +892,25 @@ def run_database_task(client, action, payload, server_id, server_container):
     name = f'lighting-db-{database_id}'
     volume_name = f'lighting-db-data-{database_id}'
     if action == 'database_delete':
-        try:
-            container = client.containers.get(name)
-            if container.labels.get(LABEL_OWNER) != 'true' or container.labels.get('net.lightingpanel.database-id') != str(database_id) or container.labels.get('net.lightingpanel.server-id') != str(server_id):
-                raise RuntimeError('Refusing to remove an unmanaged database container')
-            container.remove(force=True)
-        except docker.errors.NotFound:
-            pass
+        volume = None
+        container = None
         try:
             volume = client.volumes.get(volume_name)
             labels = volume.attrs.get('Labels',{}) or {}
             if labels.get(LABEL_OWNER) != 'true' or labels.get('net.lightingpanel.database-id') != str(database_id) or labels.get('net.lightingpanel.server-id') != str(server_id):
                 raise RuntimeError('Refusing to remove an unmanaged database volume')
-            volume.remove(force=False)
         except docker.errors.NotFound:
             pass
+        try:
+            container = client.containers.get(name)
+            if container.labels.get(LABEL_OWNER) != 'true' or container.labels.get('net.lightingpanel.database-id') != str(database_id) or container.labels.get('net.lightingpanel.server-id') != str(server_id):
+                raise RuntimeError('Refusing to remove an unmanaged database container')
+        except docker.errors.NotFound:
+            pass
+        if container is not None:
+            container.remove(force=True)
+        if volume is not None:
+            volume.remove(force=False)
         return {'data':{'status':'removed'}}
     network = ensure_server_network(client, server_id)
     server_container.reload()
