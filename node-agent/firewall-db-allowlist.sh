@@ -6,14 +6,12 @@ if [[ ${EUID} -ne 0 ]]; then
   exit 1
 fi
 if [[ $# -lt 1 ]]; then
-  echo "Usage: sudo bash firewall-db-allowlist.sh <public-interface> [trusted-source-CIDR ...]" >&2
-  echo "Example: sudo bash firewall-db-allowlist.sh eth0 203.0.113.10/32 2001:db8::10/128" >&2
+  echo "Usage: sudo bash firewall-db-allowlist.sh [trusted-source-CIDR ...]" >&2
+  echo "Example: sudo bash firewall-db-allowlist.sh 203.0.113.10/32 2001:db8::10/128" >&2
   echo "With no CIDRs, all public database ports are blocked." >&2
   exit 2
 fi
 
-interface="$1"
-shift
 command -v iptables >/dev/null || { echo "iptables is required." >&2; exit 1; }
 iptables -nL DOCKER-USER >/dev/null 2>&1 || {
   echo "Docker DOCKER-USER chain is missing. Enable Docker iptables integration before applying this policy." >&2
@@ -31,7 +29,7 @@ apply_family() {
   "$binary" -F "$chain"
   for cidr in "$@"; do
     if [[ "$family" == "ipv4" && "$cidr" != *:* ]] || [[ "$family" == "ipv6" && "$cidr" == *:* ]]; then
-      "$binary" -A "$chain" -i "$interface" -p tcp -m conntrack --ctorigdstport 32000:32999 -s "$cidr" -j RETURN
+      "$binary" -A "$chain" -p tcp -m conntrack --ctorigdstport 32000:32999 -s "$cidr" -j RETURN
     fi
   done
   "$binary" -A "$chain" -i "$interface" -p tcp -m conntrack --ctorigdstport 32000:32999 -j DROP
@@ -46,5 +44,5 @@ else
   echo "WARNING: IPv6 DOCKER-USER chain is unavailable. Disable Docker IPv6 publishing or configure an equivalent IPv6 firewall policy." >&2
 fi
 
-echo "Applied database port allowlist on interface $interface."
+echo "Applied database port allowlist for Docker-published database ports 32000–32999."
 echo "Persist the rules across reboot with your distribution's netfilter-persistent/firewall service."
