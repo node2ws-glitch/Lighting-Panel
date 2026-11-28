@@ -217,3 +217,15 @@ sudo bash firewall-db-allowlist.sh 203.0.113.10/32 2001:db8::10/128
 ```
 
 Replace the example addresses with your trusted database-client IPs/CIDRs. Run the script with no CIDRs to block all public database-port access while keeping the per-server private Docker network available. The script filters Docker-published TCP ports 32000–32999, and applies IPv4 and IPv6 rules when the corresponding Docker user chain exists. If IPv6 Docker filtering is unavailable, disable IPv6 port publishing or configure an equivalent IPv6 policy. Persist the rules with your distribution's netfilter-persistent/firewall service, and verify the active rules after reboot.
+
+
+### Disposable VPS acceptance test
+
+After installing Docker and the node-agent Python requirements, run this on a test VPS (not on a production node during busy hours):
+
+```bash
+cd node-agent
+sudo bash vps-acceptance-test.sh
+```
+
+The script pulls the same MariaDB, PostgreSQL, SFTPGo, and Minecraft images used by LPGP, starts temporary isolated containers and volumes, checks database readiness and host TCP bindings, creates a disposable SFTPGo user through its admin API, verifies the SFTP listener, and removes every temporary resource on exit. It does not modify existing LPGP servers. Run it before exposing these ports publicly; it validates image/runtime compatibility but does not replace a full panel-to-node workflow test.
