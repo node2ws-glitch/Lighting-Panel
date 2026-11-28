@@ -767,8 +767,9 @@ def run_sftp_task(client, action, payload, server_id):
         try:
             volume = client.volumes.get(config_volume)
             labels = volume.attrs.get('Labels', {}) or {}
-            if labels.get(LABEL_OWNER) == 'true' and labels.get('net.lightingpanel.sftp-server-id') == str(server_id):
-                volume.remove(force=False)
+            if labels.get(LABEL_OWNER) != 'true' or labels.get('net.lightingpanel.sftp-server-id') != str(server_id):
+                raise RuntimeError('Refusing to remove an unmanaged SFTP config volume')
+            volume.remove(force=False)
         except docker.errors.NotFound:
             pass
         try:
@@ -787,19 +788,24 @@ def run_sftp_task(client, action, payload, server_id):
     if not 31000 <= port <= 31999 or not __import__('re').fullmatch(r'lpgp[0-9]{1,10}',username) or len(password) < 32:
         raise ValueError('SFTP provisioning parameters are invalid')
     try:
+        old_config = client.volumes.get(config_volume)
+        config_labels = old_config.attrs.get('Labels',{}) or {}
+        if config_labels.get(LABEL_OWNER) != 'true' or config_labels.get('net.lightingpanel.sftp-server-id') != str(server_id):
+            raise RuntimeError('SFTP config volume name collision; refusing to mount an unmanaged volume')
+        old_config.remove(force=False)
+    except docker.errors.NotFound:
+        pass
+    config = client.volumes.create(name=config_volume,labels={LABEL_OWNER:'true','net.lightingpanel.sftp-server-id':str(server_id)})
+    config_labels = config.attrs.get('Labels',{}) or {}
+    if config_labels.get(LABEL_OWNER) != 'true' or config_labels.get('net.lightingpanel.sftp-server-id') != str(server_id):
+        raise RuntimeError('SFTP config volume ownership validation failed')
+    try:
         existing = client.containers.get(name)
         if existing.labels.get(LABEL_OWNER) != 'true' or existing.labels.get('net.lightingpanel.sftp-server-id') != str(server_id):
             raise RuntimeError('SFTP container name collision; refusing to modify an unmanaged container')
         existing.remove(force=True)
     except docker.errors.NotFound:
         pass
-    try:
-        old_config = client.volumes.get(config_volume)
-        if old_config.attrs.get('Labels',{}).get(LABEL_OWNER) == 'true' and old_config.attrs.get('Labels',{}).get('net.lightingpanel.sftp-server-id') == str(server_id):
-            old_config.remove(force=False)
-    except docker.errors.NotFound:
-        pass
-    client.volumes.create(name=config_volume,labels={LABEL_OWNER:'true','net.lightingpanel.sftp-server-id':str(server_id)})
     sftp_network = ensure_sftp_network(client, server_id)
     admin_user = 'lpgp-admin'
     admin_password = __import__('hashlib').sha256((os.getenv('NODE_TOKEN','') + ':lpgp-sftp-admin:' + str(server_id)).encode()).hexdigest()
@@ -878,15 +884,17 @@ def run_database_task(client, action, payload, server_id, server_container):
     if action == 'database_delete':
         try:
             container = client.containers.get(name)
-            if container.labels.get(LABEL_OWNER) != 'true' or container.labels.get('net.lightingpanel.database-id') != str(database_id):
+            if container.labels.get(LABEL_OWNER) != 'true' or container.labels.get('net.lightingpanel.database-id') != str(database_id) or container.labels.get('net.lightingpanel.server-id') != str(server_id):
                 raise RuntimeError('Refusing to remove an unmanaged database container')
             container.remove(force=True)
         except docker.errors.NotFound:
             pass
         try:
             volume = client.volumes.get(volume_name)
-            if volume.attrs.get('Labels',{}).get(LABEL_OWNER) == 'true' and volume.attrs.get('Labels',{}).get('net.lightingpanel.database-id') == str(database_id):
-                volume.remove(force=False)
+            labels = volume.attrs.get('Labels',{}) or {}
+            if labels.get(LABEL_OWNER) != 'true' or labels.get('net.lightingpanel.database-id') != str(database_id) or labels.get('net.lightingpanel.server-id') != str(server_id):
+                raise RuntimeError('Refusing to remove an unmanaged database volume')
+            volume.remove(force=False)
         except docker.errors.NotFound:
             pass
         return {'data':{'status':'removed'}}
