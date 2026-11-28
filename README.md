@@ -176,7 +176,7 @@ Do not expose the panel as a public multi-customer service until production hard
 
 **Credential and network protections:** database and SFTP passwords are returned to the user once, stored as hashes in their resource records, and encrypted in node-task payloads with AES-GCM using the enrolled node token as the key material. Node-token rotation is blocked while these credential-bearing tasks are pending. Minecraft and managed database containers use per-server bridge networks; managed services are cleaned up when the server is deleted.
 
-**Operational limits:** managed database ports (32000–32999) and SFTP ports (31000–31999) must be explicitly allowed by the node firewall. Public database ports should be restricted to trusted source IPs. Server backup snapshots remain node-local and currently do not include managed database volumes; database dump/restore and off-node backup storage are still required for a full disaster-recovery solution. The SFTPGo image currently follows its upstream latest tag, so operators should pin and scan an approved image before production use.
+**Operational limits:** managed database ports (32000–32999) and SFTP ports (31000–31999) must be explicitly allowed by the node firewall. Public database ports should be restricted to trusted source IPs. Game and managed database volumes are included in snapshots, and optional S3-compatible offsite copies are supported. Full multi-region disaster recovery, firewall automation, and real-VPS acceptance testing remain deployment tasks. SFTPGo uses a pinned v2.7.6 release tag; review upstream security releases and update the pin deliberately.
 
 
 ### Optional S3-compatible offsite backups
