@@ -284,12 +284,14 @@ def create_server_backup(client, server_id, mountpoint, label='manual'):
             for database_id, (_, db_mountpoint) in sorted(db_volumes.items(), key=lambda item: int(item[0])):
                 archive.add(db_mountpoint, arcname=f'__lpgp_databases__/{database_id}', recursive=True, filter=lambda info: None if info.issym() or info.islnk() or info.isdev() or info.isfifo() else info)
         temporary.replace(target)
+        _write_backup_metadata(directory, backup_id, label, len(db_volumes), False)
         offsite = _upload_backup_offsite(server_id, backup_id, target, label)
         _write_backup_metadata(directory, backup_id, label, len(db_volumes), offsite)
-    except Exception:
+    except Exception as exc:
         temporary.unlink(missing_ok=True)
-        target.unlink(missing_ok=True)
-        (directory / f'{backup_id}.json').unlink(missing_ok=True)
+        if target.is_file():
+            log.exception('Local backup %s exists but offsite backup processing failed', backup_id)
+            raise RuntimeError(f'Local backup {backup_id} was created, but offsite upload failed: {exc}') from exc
         raise
     finally:
         for container in was_running:
