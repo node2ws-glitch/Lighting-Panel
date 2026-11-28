@@ -73,7 +73,11 @@ def test_server_backup_contains_database_volumes_and_restore_is_transactional(tm
         "net.lightingpanel.server-id": "9",
         "net.lightingpanel.database-id": "17",
     })
-    docker = FakeDocker([db_volume], [db_container])
+    sftp_container = FakeContainer('lighting-sftp-9', {
+        agent.LABEL_OWNER: 'true',
+        'net.lightingpanel.sftp-server-id': '9',
+    })
+    docker = FakeDocker([db_volume], [db_container, sftp_container])
     game_container = FakeContainer("lighting-server-9", {
         agent.LABEL_OWNER: "true",
         "net.lightingpanel.server-id": "9",
@@ -84,6 +88,8 @@ def test_server_backup_contains_database_volumes_and_restore_is_transactional(tm
     assert backup["offsite"] is False
     assert db_container.stop_calls == 1
     assert db_container.start_calls == 1
+    assert sftp_container.stop_calls == 1
+    assert sftp_container.start_calls == 1
 
     (game / "server.properties").write_text("motd=after")
     (database / "base-data").write_text("database-after")
@@ -96,6 +102,9 @@ def test_server_backup_contains_database_volumes_and_restore_is_transactional(tm
     assert not (database / "new-data").exists()
     assert game_container.status == "running"
     assert db_container.status == "running"
+    assert sftp_container.status == "running"
+    assert sftp_container.stop_calls == 2
+    assert sftp_container.start_calls == 2
 
 
 def test_backup_archive_rejects_path_traversal(tmp_path):
