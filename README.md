@@ -117,7 +117,7 @@ The project should only mark a phase complete after its tests and end-to-end acc
 ## Phase 8 — backups and version upgrades
 
 - Admins can queue create/list/restore operations for per-server snapshots from the server workspace.
-- The node agent stores compressed archives under `/var/lib/lighting-panel/backups/<server-id>`, outside the server data volume, with mode-0700 directories. Snapshots include the Minecraft data volume and any managed database volumes; database containers are stopped during the snapshot and restarted afterward.
+- The node agent stores compressed archives under `/var/lib/lighting-panel/backups/<server-id>`, outside the server data volume, with mode-0700 directories. Snapshots include the Minecraft data volume and any managed database volumes; managed database and SFTP containers are stopped during the snapshot and restarted afterward.
 - Restore validates archive member paths and rejects symlinks, hardlinks, devices, and path traversal. A pre-restore snapshot is created before existing world/database data is replaced, and automatic rollback is attempted if extraction fails. Snapshots can optionally be copied to S3-compatible object storage and restored from there if the local copy is missing.
 - Minecraft version upgrades validate release version syntax, create a pre-upgrade snapshot, and replace the managed container while retaining its persistent named volume, port, resource limits, and prior running/stopped state. Allocation and version replacement retain the old container until the replacement succeeds, allowing rollback on failure.
 - Snapshots are capped at 20 GiB of combined uncompressed game and database data per snapshot. Offsite copies are optional and require S3-compatible object storage configuration on each node agent.
@@ -195,7 +195,7 @@ SFTPGO_IMAGE=drakkan/sftpgo:v2.7.6
 
 For AWS S3, omit `BACKUP_S3_ENDPOINT_URL`. Use a private bucket with versioning and lifecycle policies. The node agent requires HTTPS for non-local object-storage endpoints. If `BACKUP_S3_BUCKET` is unset, backups remain on the VPS only. When configured, new snapshots are uploaded and remote snapshots appear in the restore list; missing local archives are downloaded automatically for restore. Remote bucket access is not a substitute for testing restore procedures.
 
-Managed database data volumes are included in game-server snapshots while database containers are stopped. Restore requires the corresponding managed database service and volume to still exist on that node. Deleting a database service deletes its live data volume; preserve an offsite backup before deleting it.
+Managed database data volumes are included in game-server snapshots while database and SFTP containers are stopped. Restore requires the corresponding managed database service and volume to still exist on that node. Deleting a database service deletes its live data volume; preserve an offsite backup before deleting it.
 
 ### Required node firewall ranges
 
