@@ -264,6 +264,18 @@ def _write_backup_metadata(directory, backup_id, label, database_count, offsite)
     temporary.replace(target)
 
 
+def _restart_containers(containers, purpose):
+    failures = []
+    for container in containers:
+        try:
+            container.start()
+        except Exception as exc:
+            log.exception('Could not restart managed container %s after %s', container.name, purpose)
+            failures.append(f'{container.name}: {exc}')
+    if failures:
+        raise RuntimeError('Could not restart managed services after '+purpose+': '+'; '.join(failures))
+
+
 def create_server_backup(client, server_id, mountpoint, label='manual'):
     db_volumes = _database_volumes(client, server_id)
     db_containers = _backup_related_containers(client, server_id)
@@ -278,11 +290,7 @@ def create_server_backup(client, server_id, mountpoint, label='manual'):
         if total > MAX_BACKUP_BYTES:
             raise ValueError('Server and managed database data exceed the 20 GiB per-backup safety limit')
     except Exception:
-        for container in was_running:
-            try:
-                container.start()
-            except Exception:
-                log.exception('Could not restart database container %s after backup preflight failure', container.name)
+        _restart_containers(was_running, 'backup preflight failure')
         raise
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     backup_id = f'{stamp}-{uuid.uuid4().hex[:10]}'
@@ -312,11 +320,7 @@ def create_server_backup(client, server_id, mountpoint, label='manual'):
             raise RuntimeError(f'Local backup {backup_id} was created, but offsite upload failed: {exc}') from exc
         raise
     finally:
-        for container in was_running:
-            try:
-                container.start()
-            except Exception:
-                log.exception('Could not restart database container %s after backup', container.name)
+        _restart_containers(was_running, 'backup')
     return {'id':backup_id,'filename':target.name,'size_bytes':target.stat().st_size,'created_at':stamp,'label':label,
         'database_count':len(db_volumes),'offsite':offsite}
 
@@ -452,12 +456,20 @@ def restore_server_backup(client, server_id, container, mountpoint, backup_id):
     db_containers = _backup_related_containers(client, server_id)
     was_running = container.status == 'running'
     db_was_running = []
-    for db_container in db_containers:
-        if db_container.status == 'running':
-            db_container.stop(timeout=30)
-            db_was_running.append(db_container)
-    if was_running:
-        container.stop(timeout=30)
+    try:
+        for db_container in db_containers:
+            if db_container.status == 'running':
+                db_container.stop(timeout=30)
+                db_was_running.append(db_container)
+        if was_running:
+            container.stop(timeout=30)
+    except Exception:
+        try:
+            _restart_containers(db_was_running, 'restore preparation failure')
+        finally:
+            if was_running and container.status != 'running':
+                container.start()
+        raise
     pre_restore = None
     try:
         pre_restore = create_server_backup(client, server_id, mountpoint, label='pre-restore')
@@ -470,13 +482,11 @@ def restore_server_backup(client, server_id, container, mountpoint, backup_id):
                 raise RuntimeError(f'Restore failed ({restore_error}); automatic rollback also failed ({rollback_error}). Keep the pre-restore snapshot for manual recovery.') from restore_error
         raise
     finally:
-        for db_container in db_was_running:
-            try:
-                db_container.start()
-            except Exception:
-                log.exception('Could not restart database container %s after restore', db_container.name)
-        if was_running:
-            container.start()
+        try:
+            _restart_containers(db_was_running, 'restore')
+        finally:
+            if was_running:
+                container.start()
     return {'restored_backup':backup_id,'previous_state':'running' if was_running else 'stopped',
         'database_count':len(db_volumes)}
 
