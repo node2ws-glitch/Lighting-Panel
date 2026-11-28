@@ -256,16 +256,22 @@ def create_server_backup(client, server_id, mountpoint, label='manual'):
     db_volumes = _database_volumes(client, server_id)
     db_containers = _database_containers(client, server_id)
     was_running = []
-    for container in db_containers:
-        if container.status == 'running':
-            container.stop(timeout=30)
-            was_running.append(container)
-    total = sum(p.stat().st_size for root in [mountpoint] + [entry[1] for entry in db_volumes.values()]
-        for p in root.rglob('*') if p.is_file() and not p.is_symlink())
-    if total > MAX_BACKUP_BYTES:
+    try:
+        for container in db_containers:
+            if container.status == 'running':
+                container.stop(timeout=30)
+                was_running.append(container)
+        total = sum(p.stat().st_size for root in [mountpoint] + [entry[1] for entry in db_volumes.values()]
+            for p in root.rglob('*') if p.is_file() and not p.is_symlink())
+        if total > MAX_BACKUP_BYTES:
+            raise ValueError('Server and managed database data exceed the 20 GiB per-backup safety limit')
+    except Exception:
         for container in was_running:
-            container.start()
-        raise ValueError('Server and managed database data exceed the 20 GiB per-backup safety limit')
+            try:
+                container.start()
+            except Exception:
+                log.exception('Could not restart database container %s after backup preflight failure', container.name)
+        raise
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     backup_id = f'{stamp}-{uuid.uuid4().hex[:10]}'
     directory = backup_directory(server_id)
@@ -353,12 +359,24 @@ def _clear_directory(path):
 
 
 def _validate_backup_members(members):
+    if len(members) > 500000:
+        raise ValueError('Backup contains too many archive entries')
+    total_size = 0
+    seen = set()
     for member in members:
         name = Path(member.name)
-        if name.is_absolute() or '..' in name.parts or member.issym() or member.islnk() or member.isdev() or member.isfifo():
+        if name.is_absolute() or '..' in name.parts or '\\\\' in member.name or member.name.startswith(('\\\\', '/')) or member.issym() or member.islnk() or member.isdev() or member.isfifo():
             raise ValueError('Backup contains an unsafe archive entry')
+        normalized = name.as_posix().rstrip('/')
+        if normalized in seen:
+            raise ValueError('Backup contains duplicate archive paths')
+        seen.add(normalized)
         if not (member.isdir() or member.isfile()):
             raise ValueError('Backup contains an unsupported archive entry')
+        if member.isfile():
+            total_size += int(member.size)
+            if total_size > MAX_BACKUP_BYTES:
+                raise ValueError('Backup exceeds the 20 GiB uncompressed restore limit')
 
 
 def _extract_regular_members(archive, members, destination, strip_parts=0):
