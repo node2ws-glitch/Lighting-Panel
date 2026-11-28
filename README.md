@@ -205,3 +205,15 @@ Managed database data volumes are included in game-server snapshots while databa
 - TCP 32000–32999: managed MariaDB/PostgreSQL
 
 Restrict database access to trusted source IP addresses at the VPS firewall. Database ports are published on the node's public interfaces by Docker; do not rely on the panel's authentication to protect them.
+
+
+### Restrict Docker-published database ports
+
+Docker can route published container ports around uncomplicated UFW rules. Use the included Docker `DOCKER-USER` chain helper to restrict database ports by source address:
+
+```bash
+cd node-agent
+sudo bash firewall-db-allowlist.sh 203.0.113.10/32 2001:db8::10/128
+```
+
+Replace the example addresses with your trusted database-client IPs/CIDRs. Run the script with no CIDRs to block all public database-port access while keeping the per-server private Docker network available. The script filters Docker-published TCP ports 32000–32999, and applies IPv4 and IPv6 rules when the corresponding Docker user chain exists. If IPv6 Docker filtering is unavailable, disable IPv6 port publishing or configure an equivalent IPv6 policy. Persist the rules with your distribution's netfilter-persistent/firewall service, and verify the active rules after reboot.
