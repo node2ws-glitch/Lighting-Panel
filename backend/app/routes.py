@@ -374,7 +374,11 @@ def finish_node_task(task_id: int, payload: NodeTaskResult, x_node_token: str | 
             if task.action == 'delete' and not payload.error:
                 db.delete(server)
             elif payload.error:
-                server.status = 'error'
+                recovered_status = (payload.data or {}).get('status')
+                if task.action in ('version_upgrade','allocation_update') and recovered_status in ('online','offline'):
+                    server.status = recovered_status
+                else:
+                    server.status = 'error'
             elif task.action == 'stop':
                 server.status = 'offline'
             elif task.action == 'version_upgrade' and not payload.error:
