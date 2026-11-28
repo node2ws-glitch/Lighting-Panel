@@ -362,6 +362,15 @@ def test_backup_schedule_creation_and_due_dispatch():
     client.post(f"/api/v1/nodes/tasks/{scheduled['id']}/result", headers=node_headers, json={'data':{'backup':{'id':'20261127T120000Z-aabbccddeeff'}}})
     refreshed = client.get(f'/api/v1/admin/servers/{sid}/backup-schedules', headers=admin).json()[0]
     assert refreshed['last_run_at'] is not None
+    with TestingSession() as db:
+        row = db.get(BackupSchedule, schedule.json()['id'])
+        row.next_run_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        db.commit()
+    retry_task = next(task for task in client.get('/api/v1/nodes/tasks', headers=node_headers).json() if task['action'] == 'backup_create')
+    client.post(f"/api/v1/nodes/tasks/{retry_task['id']}/result", headers=node_headers, json={'error':'temporary storage error'})
+    retried = client.get(f'/api/v1/admin/servers/{sid}/backup-schedules', headers=admin).json()[0]
+    retry_at = datetime.fromisoformat(retried['next_run_at'].replace('Z','+00:00'))
+    assert retry_at > datetime.now(timezone.utc) + timedelta(minutes=4)
     assert client.delete(f"/api/v1/admin/servers/{sid}/backup-schedules/{schedule.json()['id']}", headers=admin).status_code == 204
 
 
