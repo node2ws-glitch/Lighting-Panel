@@ -5,12 +5,6 @@ if [[ ${EUID} -ne 0 ]]; then
   echo "Run this script as root (sudo)." >&2
   exit 1
 fi
-if [[ $# -lt 1 ]]; then
-  echo "Usage: sudo bash firewall-db-allowlist.sh [trusted-source-CIDR ...]" >&2
-  echo "Example: sudo bash firewall-db-allowlist.sh 203.0.113.10/32 2001:db8::10/128" >&2
-  echo "With no CIDRs, all public database ports are blocked." >&2
-  exit 2
-fi
 
 command -v iptables >/dev/null || { echo "iptables is required." >&2; exit 1; }
 iptables -nL DOCKER-USER >/dev/null 2>&1 || {
@@ -32,7 +26,7 @@ apply_family() {
       "$binary" -A "$chain" -p tcp -m conntrack --ctorigdstport 32000:32999 -s "$cidr" -j RETURN
     fi
   done
-  "$binary" -A "$chain" -i "$interface" -p tcp -m conntrack --ctorigdstport 32000:32999 -j DROP
+  "$binary" -A "$chain" -p tcp -m conntrack --ctorigdstport 32000:32999 -j DROP
   "$binary" -A "$chain" -j RETURN
   "$binary" -C DOCKER-USER -j "$chain" 2>/dev/null || "$binary" -I DOCKER-USER 1 -j "$chain"
 }
