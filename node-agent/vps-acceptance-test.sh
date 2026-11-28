@@ -88,6 +88,8 @@ for attempt in $(seq 1 90); do
   [[ "$attempt" -lt 90 ]] || { echo "PostgreSQL did not become ready." >&2; exit 1; }
   sleep 1
 done
+docker exec "$maria" mariadb -h 127.0.0.1 -u "$maria_user" "-p$maria_pass" lpgp_test -e 'SELECT 1' >/dev/null
+docker exec -e PGPASSWORD="$pg_pass" "$postgres" psql -h 127.0.0.1 -U "$pg_user" -d lpgp_test -c 'SELECT 1' >/dev/null
 
 echo "[4/5] Waiting for SFTPGo API, creating a test SFTP user, and checking its TCP listener..."
 LPGP_SMOKE_HTTP_PORT="$http_port" LPGP_SMOKE_SFTP_PORT="$sftp_port" \
