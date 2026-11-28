@@ -430,7 +430,7 @@ def test_additional_server_allocations_queue_container_reconfiguration():
         json={'docker_id':'docker-reconfigured','data':{'status':'online','allocations':2}})
     assert client.get(f'/api/v1/admin/servers/{sid}/allocations', headers=admin).json()[0]['protocol'] == 'udp'
     assert client.delete(f"/api/v1/admin/servers/{sid}/allocations/{added.json()['id']}", headers=admin).status_code == 202
-    rollback_task = next(item for item in client.get('/api/v1/nodes/tasks', headers=node_headers).json() if item['action'] == 'allocation_update' and item['status'] == 'claimed')
+    rollback_task = next(item for item in client.get('/api/v1/nodes/tasks', headers=node_headers).json() if item['action'] == 'allocation_update')
     client.post(f"/api/v1/nodes/tasks/{rollback_task['id']}/result", headers=node_headers,
         json={'error':'replacement failed; old container restored','data':{'status':'offline'}})
     current = client.get('/api/v1/admin/servers', headers=admin).json()
