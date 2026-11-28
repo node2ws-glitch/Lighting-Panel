@@ -365,7 +365,7 @@ def _validate_backup_members(members):
     seen = set()
     for member in members:
         name = Path(member.name)
-        if name.is_absolute() or '..' in name.parts or '\\\\' in member.name or member.name.startswith(('\\\\', '/')) or member.issym() or member.islnk() or member.isdev() or member.isfifo():
+        if name.is_absolute() or '..' in name.parts or chr(92) in member.name or member.name.startswith((chr(92), '/')) or (name.parts and len(name.parts[0]) == 2 and name.parts[0][1] == ':') or member.issym() or member.islnk() or member.isdev() or member.isfifo():
             raise ValueError('Backup contains an unsafe archive entry')
         normalized = name.as_posix().rstrip('/')
         if normalized in seen:
