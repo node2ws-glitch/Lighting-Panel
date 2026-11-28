@@ -379,7 +379,7 @@ def finish_node_task(task_id: int, payload: NodeTaskResult, x_node_token: str | 
                 server.status = 'offline'
             elif task.action == 'version_upgrade' and not payload.error:
                 server.version = json.loads(task.payload).get('version', server.version)
-                server.status = 'online'
+                server.status = (payload.data or {}).get('status', 'online')
             elif task.action == 'allocation_update' and not payload.error:
                 result_data = payload.data or {}
                 server.status = result_data.get('status', 'online')
@@ -403,12 +403,15 @@ def finish_node_task(task_id: int, payload: NodeTaskResult, x_node_token: str | 
                         db.delete(database)
             else:
                 server.status = 'online'
-    if task.action == 'backup_create' and not payload.error:
+    if task.action == 'backup_create':
         schedule_id = json.loads(task.payload).get('schedule_id')
         if schedule_id:
             schedule = db.get(BackupSchedule, int(schedule_id))
             if schedule is not None:
-                schedule.last_run_at = datetime.now(timezone.utc)
+                if not payload.error:
+                    schedule.last_run_at = datetime.now(timezone.utc)
+                else:
+                    schedule.next_run_at = datetime.now(timezone.utc) + timedelta(minutes=5)
     db.commit()
     return {'accepted':True}
 
