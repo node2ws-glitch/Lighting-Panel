@@ -48,6 +48,7 @@ class GameServer(Base):
     owner_id: Mapped[int | None] = mapped_column(ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
     name: Mapped[str] = mapped_column(String(48), nullable=False)
     game: Mapped[str] = mapped_column(String(24), default='minecraft', nullable=False)
+    server_type: Mapped[str] = mapped_column(String(16), default='paper', nullable=False)
     version: Mapped[str] = mapped_column(String(24), default='LATEST', nullable=False)
     memory_mb: Mapped[int] = mapped_column(Integer, nullable=False)
     cpu_limit: Mapped[float] = mapped_column(default=1.0, nullable=False)
@@ -114,3 +115,66 @@ class ProcessedBillingWebhook(Base):
     stripe_event_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
     event_type: Mapped[str] = mapped_column(String(128), nullable=False)
     processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class BackupSchedule(Base):
+    __tablename__ = 'backup_schedules'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    server_id: Mapped[int] = mapped_column(ForeignKey('game_servers.id', ondelete='CASCADE'), nullable=False, index=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    frequency: Mapped[str] = mapped_column(String(16), nullable=False)
+    retention: Mapped[int] = mapped_column(Integer, default=7, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class ServerAllocation(Base):
+    __tablename__ = 'server_allocations'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    server_id: Mapped[int] = mapped_column(ForeignKey('game_servers.id', ondelete='CASCADE'), nullable=False, index=True)
+    port: Mapped[int] = mapped_column(Integer, unique=True, nullable=False)
+    container_port: Mapped[int] = mapped_column(Integer, nullable=False)
+    protocol: Mapped[str] = mapped_column(String(8), default='tcp', nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class ApiKey(Base):
+    __tablename__ = 'api_keys'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    prefix: Mapped[str] = mapped_column(String(16), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SftpAccess(Base):
+    __tablename__ = 'sftp_access'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    server_id: Mapped[int] = mapped_column(ForeignKey('game_servers.id', ondelete='CASCADE'), nullable=False, unique=True, index=True)
+    node_id: Mapped[int] = mapped_column(ForeignKey('nodes.id', ondelete='CASCADE'), nullable=False, index=True)
+    username: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    port: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
+    status: Mapped[str] = mapped_column(String(16), default='provisioning', nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class DatabaseService(Base):
+    __tablename__ = 'database_services'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    server_id: Mapped[int] = mapped_column(ForeignKey('game_servers.id', ondelete='CASCADE'), nullable=False, index=True)
+    node_id: Mapped[int] = mapped_column(ForeignKey('nodes.id', ondelete='CASCADE'), nullable=False, index=True)
+    db_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    database_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    username: Mapped[str] = mapped_column(String(32), nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    port: Mapped[int] = mapped_column(Integer, unique=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default='provisioning', nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)

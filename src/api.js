@@ -59,3 +59,26 @@ export const getBillingSummary = () => request('/billing/me');
 export const startBillingCheckout = () => request('/billing/checkout', { method: 'POST' });
 export const openBillingPortal = () => request('/billing/portal', { method: 'POST' });
 export const getOperationalMetrics = () => request('/admin/metrics');
+
+export const listBackupSchedules = (id) => request('/admin/servers/' + id + '/backup-schedules');
+export const createBackupSchedule = (id, payload) => request('/admin/servers/' + id + '/backup-schedules', { method: 'POST', body: JSON.stringify(payload) });
+export const updateBackupSchedule = (id, scheduleId, payload) => request('/admin/servers/' + id + '/backup-schedules/' + scheduleId, { method: 'PATCH', body: JSON.stringify(payload) });
+export const deleteBackupSchedule = (id, scheduleId) => request('/admin/servers/' + id + '/backup-schedules/' + scheduleId, { method: 'DELETE' });
+
+export const manageServerMods = (id, payload) => request('/admin/servers/' + id + '/mods', { method: 'POST', body: JSON.stringify(payload) });
+
+export const listServerAllocations = (id) => request('/admin/servers/' + id + '/allocations');
+export const createServerAllocation = (id, payload) => request('/admin/servers/' + id + '/allocations', { method: 'POST', body: JSON.stringify(payload) });
+export const deleteServerAllocation = (id, allocationId) => request('/admin/servers/' + id + '/allocations/' + allocationId, { method: 'DELETE' });
+
+export const listApiKeys = () => request('/auth/api-keys');
+export const createApiKey = (payload) => request('/auth/api-keys', { method: 'POST', body: JSON.stringify(payload) });
+export const revokeApiKey = (id) => request('/auth/api-keys/' + id, { method: 'DELETE' });
+
+export const getServerSftp = (id) => request('/admin/servers/' + id + '/sftp');
+export const createServerSftp = (id) => request('/admin/servers/' + id + '/sftp', { method: 'POST' });
+export const deleteServerSftp = (id) => request('/admin/servers/' + id + '/sftp', { method: 'DELETE' });
+
+export const listServerDatabases = (id) => request('/admin/servers/' + id + '/databases');
+export const createServerDatabase = (id, payload) => request('/admin/servers/' + id + '/databases', { method: 'POST', body: JSON.stringify(payload) });
+export const deleteServerDatabase = (id, databaseId) => request('/admin/servers/' + id + '/databases/' + databaseId, { method: 'DELETE' });

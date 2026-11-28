@@ -63,6 +63,7 @@ class ServerCreate(BaseModel):
     node_id: int = Field(gt=0)
     owner_email: EmailStr | None = None
     version: str = Field(default='LATEST', max_length=24, pattern=r'^(LATEST|[0-9]+\.[0-9]+(\.[0-9]+)?)$')
+    server_type: Literal['paper', 'fabric', 'forge'] = 'paper'
     memory_mb: int = Field(default=2048, ge=512, le=16384)
     cpu_limit: float = Field(default=2.0, ge=0.5, le=16)
 
@@ -73,6 +74,7 @@ class ServerRead(BaseModel):
     owner_id: int | None
     name: str
     game: str
+    server_type: str
     version: str
     memory_mb: int
     cpu_limit: float
@@ -149,3 +151,91 @@ class BillingSubscriptionRead(BaseModel):
     current_period_end: datetime | None
     cancel_at_period_end: bool
     invoices: list[BillingInvoiceRead]
+
+
+class BackupScheduleCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=80, pattern=r'^[a-zA-Z0-9 _.-]+$')
+    frequency: Literal['hourly', 'daily', 'weekly']
+    retention: int = Field(default=7, ge=1, le=100)
+    enabled: bool = True
+
+class BackupScheduleUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=80, pattern=r'^[a-zA-Z0-9 _.-]+$')
+    frequency: Literal['hourly', 'daily', 'weekly'] | None = None
+    retention: int | None = Field(default=None, ge=1, le=100)
+    enabled: bool | None = None
+
+class BackupScheduleRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    server_id: int
+    name: str
+    frequency: str
+    retention: int
+    enabled: bool
+    next_run_at: datetime
+    last_run_at: datetime | None
+    created_at: datetime
+
+class ModManagerRequest(BaseModel):
+    action: Literal['list', 'install', 'remove']
+    kind: Literal['plugin', 'mod']
+    url: str | None = Field(default=None, max_length=2048)
+    filename: str | None = Field(default=None, min_length=5, max_length=128, pattern=r'^[A-Za-z0-9_. -]+\.jar$')
+
+class ServerAllocationCreate(BaseModel):
+    container_port: int = Field(ge=1024, le=65535)
+    protocol: Literal['tcp', 'udp'] = 'tcp'
+
+class ServerAllocationRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    server_id: int
+    port: int
+    container_port: int
+    protocol: str
+    created_at: datetime
+
+
+class ApiKeyCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=80, pattern=r'^[a-zA-Z0-9 _.-]+$')
+    expires_days: int | None = Field(default=90, ge=1, le=365)
+
+class ApiKeyRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    name: str
+    prefix: str
+    created_at: datetime
+    last_used_at: datetime | None
+    expires_at: datetime | None
+    revoked_at: datetime | None
+
+
+class SftpAccessRead(BaseModel):
+    id: int
+    server_id: int
+    username: str
+    port: int
+    status: str
+    host: str
+    created_at: datetime
+
+
+class DatabaseCreate(BaseModel):
+    db_type: Literal['mariadb', 'postgres']
+    database_name: str = Field(min_length=3, max_length=48, pattern=r'^[a-zA-Z][a-zA-Z0-9_]+$')
+    username: str = Field(min_length=3, max_length=32, pattern=r'^[a-zA-Z][a-zA-Z0-9_]+$')
+
+class DatabaseServiceRead(BaseModel):
+    id: int
+    server_id: int
+    db_type: str
+    database_name: str
+    username: str
+    host: str
+    internal_host: str
+    port: int
+    internal_port: int
+    status: str
+    created_at: datetime

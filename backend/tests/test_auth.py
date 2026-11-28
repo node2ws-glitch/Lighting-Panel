@@ -327,3 +327,215 @@ def test_admin_can_rotate_node_token_and_old_token_is_rejected():
     assert client.post('/api/v1/nodes/heartbeat', headers={'X-Node-Token':old_token}, json=heartbeat).status_code == 401
     assert client.post('/api/v1/nodes/heartbeat', headers={'X-Node-Token':new_token}, json=heartbeat).status_code == 200
     assert client.post(f"/api/v1/admin/nodes/{enrolled['node']['id']}/token").status_code == 401
+
+
+def test_backup_schedule_creation_and_due_dispatch():
+    from datetime import datetime, timedelta, timezone
+    from app.models import BackupSchedule, GameServer
+    login = client.post('/api/v1/auth/login', json={'email':'admin@example.com','password':'Correct-Horse-123!'}).json()
+    admin = {'Authorization':f"Bearer {login['access_token']}"}
+    enrolled = client.post('/api/v1/admin/nodes', headers=admin, json={'name':'scheduled-backup-node','fqdn':'scheduled.example.test'}).json()
+    node_headers = {'X-Node-Token':enrolled['token']}
+    client.post('/api/v1/nodes/heartbeat', headers=node_headers, json={
+        'cpu_percent':1,'memory_total':8*1024**3,'memory_used':1024**3,'disk_total':80*1024**3,'disk_used':5*1024**3
+    })
+    created = client.post('/api/v1/admin/servers', headers=admin, json={
+        'name':'Scheduled SMP','node_id':enrolled['node']['id'],'memory_mb':1024,'cpu_limit':1
+    }).json()
+    provision = client.get('/api/v1/nodes/tasks', headers=node_headers).json()[0]
+    client.post(f"/api/v1/nodes/tasks/{provision['id']}/result", headers=node_headers, json={'docker_id':'docker-scheduled'})
+    sid = created['id']
+    schedule = client.post(f'/api/v1/admin/servers/{sid}/backup-schedules', headers=admin, json={
+        'name':'Nightly world backup','frequency':'daily','retention':5,'enabled':True
+    })
+    assert schedule.status_code == 201, schedule.text
+    assert schedule.json()['retention'] == 5
+    with TestingSession() as db:
+        row = db.get(BackupSchedule, schedule.json()['id'])
+        row.next_run_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        db.commit()
+    queued = client.get('/api/v1/nodes/tasks', headers=node_headers)
+    assert queued.status_code == 200
+    scheduled = next(task for task in queued.json() if task['action'] == 'backup_create')
+    assert scheduled['payload']['label'] == 'scheduled'
+    assert scheduled['payload']['retention'] == 5
+    client.post(f"/api/v1/nodes/tasks/{scheduled['id']}/result", headers=node_headers, json={'data':{'backup':{'id':'20261127T120000Z-aabbccddeeff'}}})
+    refreshed = client.get(f'/api/v1/admin/servers/{sid}/backup-schedules', headers=admin).json()[0]
+    assert refreshed['last_run_at'] is not None
+    with TestingSession() as db:
+        row = db.get(BackupSchedule, schedule.json()['id'])
+        row.next_run_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        db.commit()
+    retry_task = next(task for task in client.get('/api/v1/nodes/tasks', headers=node_headers).json() if task['action'] == 'backup_create')
+    client.post(f"/api/v1/nodes/tasks/{retry_task['id']}/result", headers=node_headers, json={'error':'temporary storage error'})
+    retried = client.get(f'/api/v1/admin/servers/{sid}/backup-schedules', headers=admin).json()[0]
+    retry_at = datetime.fromisoformat(retried['next_run_at'].replace('Z','+00:00'))
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=timezone.utc)
+    assert retry_at > datetime.now(timezone.utc) + timedelta(minutes=4)
+    assert client.delete(f"/api/v1/admin/servers/{sid}/backup-schedules/{schedule.json()['id']}", headers=admin).status_code == 204
+
+
+def test_fabric_server_type_and_mod_manager_task_permissions():
+    login = client.post('/api/v1/auth/login', json={'email':'admin@example.com','password':'Correct-Horse-123!'}).json()
+    admin = {'Authorization':f"Bearer {login['access_token']}"}
+    enrolled = client.post('/api/v1/admin/nodes', headers=admin, json={'name':'fabric-node','fqdn':'fabric.example.test'}).json()
+    node_headers = {'X-Node-Token':enrolled['token']}
+    client.post('/api/v1/nodes/heartbeat', headers=node_headers, json={
+        'cpu_percent':1,'memory_total':8*1024**3,'memory_used':1024**3,'disk_total':80*1024**3,'disk_used':5*1024**3
+    })
+    created = client.post('/api/v1/admin/servers', headers=admin, json={
+        'name':'Fabric SMP','node_id':enrolled['node']['id'],'memory_mb':1024,'cpu_limit':1,'server_type':'fabric'
+    })
+    assert created.status_code == 202, created.text
+    assert created.json()['server_type'] == 'fabric'
+    sid = created.json()['id']
+    provision = client.get('/api/v1/nodes/tasks', headers=node_headers).json()[0]
+    assert provision['payload']['server_type'] == 'fabric'
+    client.post(f"/api/v1/nodes/tasks/{provision['id']}/result", headers=node_headers, json={'docker_id':'docker-fabric'})
+    plugin = client.post(f'/api/v1/admin/servers/{sid}/mods', headers=admin, json={'action':'list','kind':'plugin'})
+    assert plugin.status_code == 409
+    mods = client.post(f'/api/v1/admin/servers/{sid}/mods', headers=admin, json={'action':'list','kind':'mod'})
+    assert mods.status_code == 202
+    task = client.get('/api/v1/nodes/tasks', headers=node_headers).json()[0]
+    assert task['action'] == 'mod_manager'
+    assert task['payload']['kind'] == 'mod'
+    assert client.post(f'/api/v1/admin/servers/{sid}/mods', headers=admin,
+        json={'action':'install','kind':'mod','filename':'bad.jar','url':'http://127.0.0.1/evil.jar'}).status_code == 422
+
+
+def test_additional_server_allocations_queue_container_reconfiguration():
+    login = client.post('/api/v1/auth/login', json={'email':'admin@example.com','password':'Correct-Horse-123!'}).json()
+    admin = {'Authorization':f"Bearer {login['access_token']}"}
+    enrolled = client.post('/api/v1/admin/nodes', headers=admin, json={'name':'allocation-node','fqdn':'allocation.example.test'}).json()
+    node_headers = {'X-Node-Token':enrolled['token']}
+    client.post('/api/v1/nodes/heartbeat', headers=node_headers, json={
+        'cpu_percent':1,'memory_total':8*1024**3,'memory_used':1024**3,'disk_total':80*1024**3,'disk_used':5*1024**3
+    })
+    created = client.post('/api/v1/admin/servers', headers=admin, json={
+        'name':'Allocation SMP','node_id':enrolled['node']['id'],'memory_mb':1024,'cpu_limit':1
+    }).json()
+    provision = client.get('/api/v1/nodes/tasks', headers=node_headers).json()[0]
+    client.post(f"/api/v1/nodes/tasks/{provision['id']}/result", headers=node_headers, json={'docker_id':'docker-allocation'})
+    sid = created['id']
+    added = client.post(f'/api/v1/admin/servers/{sid}/allocations', headers=admin,
+        json={'container_port':25566,'protocol':'udp'})
+    assert added.status_code == 202, added.text
+    assert added.json()['container_port'] == 25566
+    queued = client.get('/api/v1/nodes/tasks', headers=node_headers).json()
+    task = next(item for item in queued if item['action'] == 'allocation_update')
+    assert task['payload']['allocations'][0]['container_port'] == 25565
+    assert task['payload']['allocations'][1]['container_port'] == 25566
+    client.post(f"/api/v1/nodes/tasks/{task['id']}/result", headers=node_headers,
+        json={'docker_id':'docker-reconfigured','data':{'status':'online','allocations':2}})
+    assert client.get(f'/api/v1/admin/servers/{sid}/allocations', headers=admin).json()[0]['protocol'] == 'udp'
+    assert client.delete(f"/api/v1/admin/servers/{sid}/allocations/{added.json()['id']}", headers=admin).status_code == 202
+    rollback_task = next(item for item in client.get('/api/v1/nodes/tasks', headers=node_headers).json() if item['action'] == 'allocation_update')
+    client.post(f"/api/v1/nodes/tasks/{rollback_task['id']}/result", headers=node_headers,
+        json={'error':'replacement failed; old container restored','data':{'status':'offline'}})
+    current = client.get('/api/v1/admin/servers', headers=admin).json()
+    assert next(item for item in current if item['id'] == sid)['status'] == 'offline'
+
+
+def test_personal_api_keys_are_read_only_and_revocable():
+    with TestingSession() as db:
+        customer = User(email='customer@example.com', username='customer', password_hash=hash_password('Customer-Password-123!'), role='user')
+        db.add(customer)
+        db.commit()
+    admin_login = client.post('/api/v1/auth/login', json={'email':'admin@example.com','password':'Correct-Horse-123!'}).json()
+    admin = {'Authorization':f"Bearer {admin_login['access_token']}"}
+    customer_login = client.post('/api/v1/auth/login', json={'email':'customer@example.com','password':'Customer-Password-123!'}).json()
+    customer_auth = {'Authorization':f"Bearer {customer_login['access_token']}"}
+    enrolled = client.post('/api/v1/admin/nodes', headers=admin, json={'name':'api-key-node','fqdn':'api-key.example.test'}).json()
+    node_headers = {'X-Node-Token':enrolled['token']}
+    client.post('/api/v1/nodes/heartbeat', headers=node_headers, json={
+        'cpu_percent':1,'memory_total':8*1024**3,'memory_used':1024**3,'disk_total':80*1024**3,'disk_used':5*1024**3
+    })
+    created = client.post('/api/v1/admin/servers', headers=admin, json={
+        'name':'Customer Server','node_id':enrolled['node']['id'],'owner_email':'customer@example.com','memory_mb':1024,'cpu_limit':1
+    }).json()
+    provision = client.get('/api/v1/nodes/tasks', headers=node_headers).json()[0]
+    client.post(f"/api/v1/nodes/tasks/{provision['id']}/result", headers=node_headers, json={'docker_id':'docker-customer'})
+    made = client.post('/api/v1/auth/api-keys', headers=customer_auth, json={'name':'Monitoring','expires_days':30})
+    assert made.status_code == 201, made.text
+    token = made.json()['api_key']
+    key_headers = {'Authorization':f'Bearer {token}'}
+    assert token.startswith('lpgp_')
+    assert client.get('/api/v1/auth/me', headers=key_headers).json()['username'] == 'customer'
+    visible = client.get('/api/v1/admin/servers', headers=key_headers)
+    assert visible.status_code == 200
+    assert any(server['id'] == created['id'] for server in visible.json())
+    denied = client.post(f"/api/v1/admin/servers/{created['id']}/action", headers=key_headers, json={'action':'start'})
+    assert denied.status_code == 403
+    assert client.get('/api/v1/admin/users', headers=key_headers).status_code == 403
+    key_id = made.json()['key']['id']
+    assert client.delete(f'/api/v1/auth/api-keys/{key_id}', headers=customer_auth).status_code == 204
+    assert client.get('/api/v1/auth/me', headers=key_headers).status_code == 401
+
+
+def test_sftp_access_is_created_and_revoked_through_node_tasks():
+    login = client.post('/api/v1/auth/login', json={'email':'admin@example.com','password':'Correct-Horse-123!'}).json()
+    admin = {'Authorization':f"Bearer {login['access_token']}"}
+    enrolled = client.post('/api/v1/admin/nodes', headers=admin, json={'name':'sftp-node','fqdn':'sftp.example.test'}).json()
+    node_headers = {'X-Node-Token':enrolled['token']}
+    client.post('/api/v1/nodes/heartbeat', headers=node_headers, json={
+        'cpu_percent':1,'memory_total':8*1024**3,'memory_used':1024**3,'disk_total':80*1024**3,'disk_used':5*1024**3
+    })
+    created = client.post('/api/v1/admin/servers', headers=admin, json={
+        'name':'SFTP SMP','node_id':enrolled['node']['id'],'memory_mb':1024,'cpu_limit':1
+    }).json()
+    provision = client.get('/api/v1/nodes/tasks', headers=node_headers).json()[0]
+    client.post(f"/api/v1/nodes/tasks/{provision['id']}/result", headers=node_headers, json={'docker_id':'docker-sftp'})
+    sid = created['id']
+    result = client.post(f'/api/v1/admin/servers/{sid}/sftp', headers=admin)
+    assert result.status_code == 202, result.text
+    assert result.json()['password']
+    assert result.json()['access']['host'] == 'sftp.example.test'
+    task = client.get('/api/v1/nodes/tasks', headers=node_headers).json()[0]
+    assert task['action'] == 'sftp_create'
+    assert 'password_encrypted' in task['payload'] and 'password' not in task['payload']
+    client.post(f"/api/v1/nodes/tasks/{task['id']}/result", headers=node_headers, json={'data':{'status':'active'}})
+    current = client.get(f'/api/v1/admin/servers/{sid}/sftp', headers=admin)
+    assert current.status_code == 200 and current.json()['status'] == 'active'
+    deleted = client.delete(f'/api/v1/admin/servers/{sid}/sftp', headers=admin)
+    assert deleted.status_code == 202
+    remove_task = client.get('/api/v1/nodes/tasks', headers=node_headers).json()[0]
+    assert remove_task['action'] == 'sftp_delete'
+    client.post(f"/api/v1/nodes/tasks/{remove_task['id']}/result", headers=node_headers, json={'data':{'status':'removed'}})
+    assert client.get(f'/api/v1/admin/servers/{sid}/sftp', headers=admin).json() is None
+
+
+def test_managed_database_service_lifecycle():
+    login = client.post('/api/v1/auth/login', json={'email':'admin@example.com','password':'Correct-Horse-123!'}).json()
+    admin = {'Authorization':f"Bearer {login['access_token']}"}
+    enrolled = client.post('/api/v1/admin/nodes', headers=admin, json={'name':'database-node','fqdn':'database.example.test'}).json()
+    node_headers = {'X-Node-Token':enrolled['token']}
+    client.post('/api/v1/nodes/heartbeat', headers=node_headers, json={
+        'cpu_percent':1,'memory_total':8*1024**3,'memory_used':1024**3,'disk_total':80*1024**3,'disk_used':5*1024**3
+    })
+    created = client.post('/api/v1/admin/servers', headers=admin, json={
+        'name':'Database SMP','node_id':enrolled['node']['id'],'memory_mb':1024,'cpu_limit':1
+    }).json()
+    provision = client.get('/api/v1/nodes/tasks', headers=node_headers).json()[0]
+    client.post(f"/api/v1/nodes/tasks/{provision['id']}/result", headers=node_headers, json={'docker_id':'docker-database'})
+    sid = created['id']
+    result = client.post(f'/api/v1/admin/servers/{sid}/databases', headers=admin, json={
+        'db_type':'mariadb','database_name':'game_data','username':'game_user'
+    })
+    assert result.status_code == 202, result.text
+    assert result.json()['password']
+    assert result.json()['database']['internal_host'].startswith('lighting-db-')
+    task = client.get('/api/v1/nodes/tasks', headers=node_headers).json()[0]
+    assert task['action'] == 'database_create'
+    assert 'password_encrypted' in task['payload'] and 'password' not in task['payload']
+    client.post(f"/api/v1/nodes/tasks/{task['id']}/result", headers=node_headers,
+        json={'data':{'status':'active','internal_host':result.json()['database']['internal_host'],'internal_port':3306}})
+    listing = client.get(f'/api/v1/admin/servers/{sid}/databases', headers=admin)
+    assert listing.status_code == 200 and listing.json()[0]['status'] == 'active'
+    assert listing.json()[0]['port'] == result.json()['database']['port']
+    deleted = client.delete(f"/api/v1/admin/servers/{sid}/databases/{result.json()['database']['id']}", headers=admin)
+    assert deleted.status_code == 202
+    remove_task = client.get('/api/v1/nodes/tasks', headers=node_headers).json()[0]
+    assert remove_task['action'] == 'database_delete'
+    client.post(f"/api/v1/nodes/tasks/{remove_task['id']}/result", headers=node_headers, json={'data':{'status':'removed'}})
+    assert client.get(f'/api/v1/admin/servers/{sid}/databases', headers=admin).json() == []

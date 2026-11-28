@@ -8,10 +8,12 @@ import time
 import tarfile
 import shutil
 import uuid
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 import docker
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import psutil
 import requests
 
@@ -150,10 +152,146 @@ def backup_directory(server_id):
     directory.chmod(0o700)
     return directory
 
+def _database_volumes(client, server_id):
+    server_id = str(int(server_id))
+    output = {}
+    for volume in client.volumes.list():
+        labels = volume.attrs.get('Labels', {}) or {}
+        database_id = labels.get('net.lightingpanel.database-id')
+        if labels.get(LABEL_OWNER) != 'true' or labels.get('net.lightingpanel.server-id') != server_id or not database_id:
+            continue
+        mountpoint = Path(volume.attrs.get('Mountpoint', '')).resolve()
+        if not mountpoint.is_dir():
+            raise RuntimeError(f'Database volume {volume.name} mountpoint is unavailable')
+        output[str(database_id)] = (volume, mountpoint)
+    return output
+
+
+def _database_containers(client, server_id):
+    server_id = str(int(server_id))
+    output = []
+    for container in client.containers.list(all=True):
+        labels = container.labels or {}
+        if labels.get(LABEL_OWNER) == 'true' and labels.get('net.lightingpanel.server-id') == server_id and labels.get('net.lightingpanel.database-id'):
+            output.append(container)
+    return output
+
+
+def _backup_related_containers(client, server_id):
+    server_id = str(int(server_id))
+    output = []
+    for container in client.containers.list(all=True):
+        labels = container.labels or {}
+        database_container = labels.get('net.lightingpanel.server-id') == server_id and labels.get('net.lightingpanel.database-id')
+        sftp_container = labels.get('net.lightingpanel.sftp-server-id') == server_id
+        if labels.get(LABEL_OWNER) == 'true' and (database_container or sftp_container):
+            output.append(container)
+    return output
+
+
+def _s3_backup_config():
+    bucket = os.getenv('BACKUP_S3_BUCKET', '').strip()
+    if not bucket:
+        return None
+    endpoint = os.getenv('BACKUP_S3_ENDPOINT_URL', '').strip() or None
+    if endpoint:
+        import urllib.parse
+        parsed = urllib.parse.urlparse(endpoint)
+        if parsed.scheme != 'https' and parsed.hostname not in ('localhost', '127.0.0.1', '::1'):
+            raise RuntimeError('BACKUP_S3_ENDPOINT_URL must use HTTPS')
+        if parsed.username or parsed.password:
+            raise RuntimeError('Do not put object-storage credentials in BACKUP_S3_ENDPOINT_URL')
+    prefix = os.getenv('BACKUP_S3_PREFIX', 'lpgp-backups').strip('/ ')
+    if not prefix or '..' in Path(prefix).parts:
+        raise RuntimeError('BACKUP_S3_PREFIX is invalid')
+    import boto3
+    client = boto3.client('s3', endpoint_url=endpoint, region_name=os.getenv('BACKUP_S3_REGION', 'us-east-1'))
+    return client, bucket, prefix
+
+
+def _s3_backup_key(prefix, server_id, backup_id):
+    return f'{prefix}/{int(server_id)}/{backup_id}.tar.gz'
+
+
+def _upload_backup_offsite(server_id, backup_id, archive_path, label):
+    config = _s3_backup_config()
+    if config is None:
+        return False
+    client, bucket, prefix = config
+    client.upload_file(str(archive_path), bucket, _s3_backup_key(prefix, server_id, backup_id),
+        ExtraArgs={'Metadata': {'server-id': str(int(server_id)), 'backup-id': backup_id, 'label': str(label)[:32]}})
+    return True
+
+
+def _download_backup_offsite(server_id, backup_id, target):
+    config = _s3_backup_config()
+    if config is None:
+        return False
+    client, bucket, prefix = config
+    key = _s3_backup_key(prefix, server_id, backup_id)
+    try:
+        client.head_object(Bucket=bucket, Key=key)
+    except Exception as exc:
+        response = getattr(exc, 'response', {}) or {}
+        code = str(response.get('Error', {}).get('Code', ''))
+        if code in ('404', 'NoSuchKey', 'NotFound'):
+            return False
+        raise
+    temporary = target.with_name('.' + target.name + '.download')
+    try:
+        client.download_file(bucket, key, str(temporary))
+        if not tarfile.is_tarfile(temporary):
+            raise RuntimeError('Offsite backup object is not a valid tar archive')
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return True
+
+
+def _delete_backup_offsite(server_id, backup_id):
+    config = _s3_backup_config()
+    if config is None:
+        return
+    client, bucket, prefix = config
+    client.delete_object(Bucket=bucket, Key=_s3_backup_key(prefix, server_id, backup_id))
+
+
+def _write_backup_metadata(directory, backup_id, label, database_count, offsite):
+    target = directory / f'{backup_id}.json'
+    temporary = directory / f'.{backup_id}.json.tmp'
+    temporary.write_text(json.dumps({'label':str(label)[:32], 'database_count':int(database_count), 'offsite':bool(offsite)}))
+    temporary.chmod(0o600)
+    temporary.replace(target)
+
+
+def _restart_containers(containers, purpose):
+    failures = []
+    for container in containers:
+        try:
+            container.start()
+        except Exception as exc:
+            log.exception('Could not restart managed container %s after %s', container.name, purpose)
+            failures.append(f'{container.name}: {exc}')
+    if failures:
+        raise RuntimeError('Could not restart managed services after '+purpose+': '+'; '.join(failures))
+
+
 def create_server_backup(client, server_id, mountpoint, label='manual'):
-    total = sum(p.stat().st_size for p in mountpoint.rglob('*') if p.is_file() and not p.is_symlink())
-    if total > MAX_BACKUP_BYTES:
-        raise ValueError('Server data exceeds the 20 GiB per-backup safety limit')
+    db_volumes = _database_volumes(client, server_id)
+    db_containers = _backup_related_containers(client, server_id)
+    was_running = []
+    try:
+        for container in db_containers:
+            if container.status == 'running':
+                container.stop(timeout=30)
+                was_running.append(container)
+        total = sum(p.stat().st_size for root in [mountpoint] + [entry[1] for entry in db_volumes.values()]
+            for p in root.rglob('*') if p.is_file() and not p.is_symlink())
+        if total > MAX_BACKUP_BYTES:
+            raise ValueError('Server and managed database data exceed the 20 GiB per-backup safety limit')
+    except Exception:
+        _restart_containers(was_running, 'backup preflight failure')
+        raise
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     backup_id = f'{stamp}-{uuid.uuid4().hex[:10]}'
     directory = backup_directory(server_id)
@@ -169,90 +307,265 @@ def create_server_backup(client, server_id, mountpoint, label='manual'):
                     item = root_path / filename
                     if not item.is_symlink() and item.is_file():
                         archive.add(item, arcname=item.relative_to(mountpoint).as_posix(), recursive=False)
+            for database_id, (_, db_mountpoint) in sorted(db_volumes.items(), key=lambda item: int(item[0])):
+                archive.add(db_mountpoint, arcname=f'__lpgp_databases__/{database_id}', recursive=True, filter=lambda info: None if info.issym() or info.islnk() or info.isdev() or info.isfifo() else info)
         temporary.replace(target)
-    except Exception:
+        _write_backup_metadata(directory, backup_id, label, len(db_volumes), False)
+        offsite = _upload_backup_offsite(server_id, backup_id, target, label)
+        _write_backup_metadata(directory, backup_id, label, len(db_volumes), offsite)
+    except Exception as exc:
         temporary.unlink(missing_ok=True)
+        if target.is_file():
+            log.exception('Local backup %s exists but offsite backup processing failed', backup_id)
+            raise RuntimeError(f'Local backup {backup_id} was created, but offsite upload failed: {exc}') from exc
         raise
-    return {'id':backup_id,'filename':target.name,'size_bytes':target.stat().st_size,'created_at':stamp,'label':label}
+    finally:
+        _restart_containers(was_running, 'backup')
+    return {'id':backup_id,'filename':target.name,'size_bytes':target.stat().st_size,'created_at':stamp,'label':label,
+        'database_count':len(db_volumes),'offsite':offsite}
+
 
 def list_server_backups(server_id):
     directory = backup_directory(server_id)
-    output = []
+    output = {}
     for item in sorted(directory.glob('*.tar.gz'), key=lambda p:p.name, reverse=True)[:100]:
         backup_id = item.name[:-7]
         if not __import__('re').fullmatch(r'\d{8}T\d{6}Z-[a-f0-9]{10}', backup_id):
             continue
-        output.append({'id':backup_id,'filename':item.name,'size_bytes':item.stat().st_size,'created_at':backup_id[:16]})
-    return output
+        metadata = {}
+        metadata_path = directory / f'{backup_id}.json'
+        if metadata_path.is_file():
+            try:
+                metadata = json.loads(metadata_path.read_text())
+            except (OSError, ValueError):
+                metadata = {}
+        output[backup_id] = {'id':backup_id,'filename':item.name,'size_bytes':item.stat().st_size,
+            'created_at':backup_id[:16],'label':metadata.get('label','manual'),
+            'database_count':int(metadata.get('database_count',0)),'offsite':bool(metadata.get('offsite',False))}
+    config = _s3_backup_config()
+    if config is not None:
+        client, bucket, prefix = config
+        paginator = client.get_paginator('list_objects_v2')
+        for page in paginator.paginate(Bucket=bucket, Prefix=f'{prefix}/{int(server_id)}/'):
+            for obj in page.get('Contents', []):
+                key = obj.get('Key', '')
+                backup_id = key.rsplit('/',1)[-1][:-7] if key.endswith('.tar.gz') else ''
+                if not __import__('re').fullmatch(r'\d{8}T\d{6}Z-[a-f0-9]{10}', backup_id):
+                    continue
+                if backup_id in output:
+                    output[backup_id]['offsite'] = True
+                    continue
+                try:
+                    metadata = client.head_object(Bucket=bucket, Key=key).get('Metadata', {})
+                except Exception:
+                    metadata = {}
+                output[backup_id] = {'id':backup_id,'filename':backup_id+'.tar.gz','size_bytes':int(obj.get('Size',0)),
+                    'created_at':backup_id[:16],'label':metadata.get('label','manual'),'database_count':0,'offsite':True}
+    return sorted(output.values(), key=lambda item:item['id'], reverse=True)[:100]
+
+
+def _clear_directory(path):
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+    for child in path.iterdir():
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
+def _validate_backup_members(members):
+    if len(members) > 500000:
+        raise ValueError('Backup contains too many archive entries')
+    total_size = 0
+    seen = set()
+    for member in members:
+        name = Path(member.name)
+        if name.is_absolute() or '..' in name.parts or chr(92) in member.name or member.name.startswith((chr(92), '/')) or (name.parts and len(name.parts[0]) == 2 and name.parts[0][1] == ':') or member.issym() or member.islnk() or member.isdev() or member.isfifo():
+            raise ValueError('Backup contains an unsafe archive entry')
+        normalized = name.as_posix().rstrip('/')
+        if normalized in seen:
+            raise ValueError('Backup contains duplicate archive paths')
+        seen.add(normalized)
+        if not (member.isdir() or member.isfile()):
+            raise ValueError('Backup contains an unsupported archive entry')
+        if member.isfile():
+            total_size += int(member.size)
+            if total_size > MAX_BACKUP_BYTES:
+                raise ValueError('Backup exceeds the 20 GiB uncompressed restore limit')
+
+
+def _extract_regular_members(archive, members, destination, strip_parts=0):
+    destination = Path(destination).resolve()
+    for member in members:
+        parts = Path(member.name).parts[strip_parts:]
+        if not parts:
+            continue
+        target = (destination.joinpath(*parts)).resolve()
+        if not target.is_relative_to(destination):
+            raise ValueError('Backup extraction path escaped its destination')
+        if member.isdir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source = archive.extractfile(member)
+        if source is None:
+            raise ValueError('Backup file data is missing')
+        with source, target.open('wb') as output:
+            shutil.copyfileobj(source, output, length=1024*1024)
+        target.chmod(member.mode & 0o777)
+
+
+def _apply_backup_archive(client, server_id, archive_path, mountpoint, db_volumes):
+    with tarfile.open(archive_path, 'r:gz') as archive:
+        members = archive.getmembers()
+        _validate_backup_members(members)
+        db_groups = {}
+        server_members = []
+        for member in members:
+            parts = Path(member.name).parts
+            if parts and parts[0] == '__lpgp_databases__':
+                if len(parts) < 2 or not parts[1].isdigit():
+                    raise ValueError('Backup contains an invalid database volume identifier')
+                db_groups.setdefault(parts[1], []).append(member)
+            else:
+                server_members.append(member)
+        for database_id in db_groups:
+            if database_id not in db_volumes:
+                raise ValueError(f'Backup includes database {database_id}, but its managed volume is missing')
+        _clear_directory(mountpoint)
+        _extract_regular_members(archive, server_members, mountpoint)
+        for database_id, group in db_groups.items():
+            destination = db_volumes[database_id][1]
+            _clear_directory(destination)
+            _extract_regular_members(archive, group, destination, strip_parts=2)
+    return {'database_count':len(db_groups)}
+
 
 def restore_server_backup(client, server_id, container, mountpoint, backup_id):
     if not __import__('re').fullmatch(r'\d{8}T\d{6}Z-[a-f0-9]{10}', str(backup_id)):
         raise ValueError('Invalid backup identifier')
     directory = backup_directory(server_id).resolve()
     archive_path = (directory / (str(backup_id)+'.tar.gz')).resolve()
-    if archive_path.parent != directory or not archive_path.is_file():
-        raise ValueError('Backup does not exist on this node')
-    with tarfile.open(archive_path, 'r:gz') as archive:
-        members = archive.getmembers()
-        for member in members:
-            name = Path(member.name)
-            if name.is_absolute() or '..' in name.parts or member.issym() or member.islnk() or member.isdev() or member.isfifo():
-                raise ValueError('Backup contains an unsafe archive entry')
+    if archive_path.parent != directory:
+        raise ValueError('Invalid backup path')
+    if not archive_path.is_file():
+        if not _download_backup_offsite(server_id, str(backup_id), archive_path):
+            raise ValueError('Backup does not exist locally or in configured offsite storage')
+    db_volumes = _database_volumes(client, server_id)
+    db_containers = _backup_related_containers(client, server_id)
     was_running = container.status == 'running'
-    if was_running:
-        container.stop(timeout=30)
+    db_was_running = []
     try:
-        create_server_backup(client, server_id, mountpoint, label='pre-restore')
-        for child in mountpoint.iterdir():
-            if child.is_dir() and not child.is_symlink():
-                shutil.rmtree(child)
-            else:
-                child.unlink()
-        with tarfile.open(archive_path, 'r:gz') as archive:
-            archive.extractall(mountpoint, members=members)
-    except Exception:
+        for db_container in db_containers:
+            if db_container.status == 'running':
+                db_container.stop(timeout=30)
+                db_was_running.append(db_container)
         if was_running:
-            container.start()
+            container.stop(timeout=30)
+    except Exception:
+        try:
+            _restart_containers(db_was_running, 'restore preparation failure')
+        finally:
+            if was_running and container.status != 'running':
+                container.start()
         raise
-    if was_running:
-        container.start()
-    return {'restored_backup':backup_id,'previous_state':'running' if was_running else 'stopped'}
+    pre_restore = None
+    try:
+        pre_restore = create_server_backup(client, server_id, mountpoint, label='pre-restore')
+        _apply_backup_archive(client, server_id, archive_path, mountpoint, db_volumes)
+    except Exception as restore_error:
+        if pre_restore:
+            try:
+                _apply_backup_archive(client, server_id, backup_directory(server_id) / pre_restore['filename'], mountpoint, db_volumes)
+            except Exception as rollback_error:
+                raise RuntimeError(f'Restore failed ({restore_error}); automatic rollback also failed ({rollback_error}). Keep the pre-restore snapshot for manual recovery.') from restore_error
+        raise
+    finally:
+        try:
+            _restart_containers(db_was_running, 'restore')
+        finally:
+            if was_running:
+                container.start()
+    return {'restored_backup':backup_id,'previous_state':'running' if was_running else 'stopped',
+        'database_count':len(db_volumes)}
 
-def create_minecraft_container(client, server_id, version, memory_mb, cpu_limit, port):
-    return client.containers.run(
+
+
+def ensure_server_network(client, server_id):
+    name = f'lighting-server-net-{int(server_id)}'
+    try:
+        network = client.networks.get(name)
+    except docker.errors.NotFound:
+        network = client.networks.create(name, driver='bridge',
+            labels={LABEL_OWNER:'true','net.lightingpanel.server-id':str(server_id)})
+    labels = network.attrs.get('Labels', {}) or {}
+    if labels.get(LABEL_OWNER) != 'true' or labels.get('net.lightingpanel.server-id') != str(server_id):
+        raise RuntimeError('Server network ownership validation failed')
+    return network
+
+def create_minecraft_container(client, server_id, version, memory_mb, cpu_limit, port, server_type='paper', extra_allocations=None):
+    ports = {'25565/tcp': ('0.0.0.0', int(port))}
+    for item in extra_allocations or []:
+        container_port = int(item.get('container_port', 0)); host_port = int(item.get('port', 0)); protocol = str(item.get('protocol', 'tcp'))
+        if not 1024 <= container_port <= 65535 or not 1024 <= host_port <= 65535 or protocol not in ('tcp', 'udp'):
+            raise ValueError('Additional allocation is invalid')
+        key = f'{container_port}/{protocol}'
+        if key in ports:
+            raise ValueError('Duplicate container port and protocol')
+        ports[key] = ('0.0.0.0', host_port)
+    network = ensure_server_network(client, server_id)
+    container = client.containers.run(
         IMAGE, name=container_name(server_id), detach=True,
-        environment={'EULA':'TRUE','TYPE':'PAPER','VERSION':version,'MEMORY':f'{int(memory_mb * 0.8)}M','TZ':'UTC'},
-        ports={'25565/tcp':('0.0.0.0',int(port))},
+        environment={'EULA':'TRUE','TYPE':str(server_type).upper(),'VERSION':version,'MEMORY':f'{int(memory_mb * 0.8)}M','TZ':'UTC'},
+        ports=ports, network=network.name,
         volumes={f'lighting-server-data-{server_id}':{'bind':'/data','mode':'rw'}},
         mem_limit=f'{int(memory_mb)}m', nano_cpus=int(float(cpu_limit)*1_000_000_000),
         pids_limit=512, init=True, tty=True, stdin_open=True,
         labels={LABEL_OWNER:'true','net.lightingpanel.server-id':str(server_id)},
         restart_policy={'Name':'unless-stopped'}, cap_drop=['NET_RAW','SYS_CHROOT','MKNOD'],
         security_opt=['no-new-privileges:true'])
+    return container
 
 def upgrade_minecraft_server(client, server_id, container, payload):
     version = str(payload.get('version',''))
     if not __import__('re').fullmatch(r'\d+\.\d+(\.\d+)?', version):
         raise ValueError('Choose a valid Minecraft release version')
-    memory_mb = int(payload.get('memory_mb',0)); cpu_limit = float(payload.get('cpu_limit',0)); port = int(payload.get('port',0))
+    memory_mb = int(payload.get('memory_mb',0)); cpu_limit = float(payload.get('cpu_limit',0)); port = int(payload.get('port',0)); server_type = str(payload.get('server_type', 'paper')).lower()
+    if server_type not in ('paper','fabric','forge'):
+        raise ValueError('Unsupported Minecraft server type')
     if not 512 <= memory_mb <= 16384 or not 0.5 <= cpu_limit <= 16 or not 25565 <= port <= 25999:
         raise ValueError('Server resource settings are invalid')
     _, mountpoint = server_volume(client, server_id)
     old_version = str(payload.get('previous_version','LATEST'))
     was_running = container.status == 'running'
+    original_name = container.name
+    temporary_name = f'{original_name}-upgrade-{uuid.uuid4().hex[:8]}'
     if was_running:
         container.stop(timeout=30)
+    replacement = None
     try:
         create_server_backup(client, server_id, mountpoint, label='pre-upgrade')
-        container.remove(v=False)
+        container.rename(temporary_name)
         client.images.pull(IMAGE)
-        replacement = create_minecraft_container(client, server_id, version, memory_mb, cpu_limit, port)
-        return {'version':version,'docker_id':replacement.id,'backup_created':True}
+        replacement = create_minecraft_container(client, server_id, version, memory_mb, cpu_limit, port, server_type)
+        if not was_running:
+            replacement.stop(timeout=30)
+        container.remove(force=True, v=False)
+        return {'version':version,'docker_id':replacement.id,'backup_created':True,
+            'status':'online' if was_running else 'offline'}
     except Exception:
+        if replacement is not None:
+            try:
+                replacement.remove(force=True, v=False)
+            except Exception:
+                log.exception('Could not remove failed replacement container for server %s', server_id)
         try:
-            create_minecraft_container(client, server_id, old_version, memory_mb, cpu_limit, port)
+            container.rename(original_name)
+            if was_running:
+                container.start()
         except Exception:
-            log.exception('Could not recreate previous Minecraft version after failed upgrade')
+            log.exception('Could not restore the previous Minecraft container after failed upgrade')
         raise
 
 def run_backup_task(client, action, payload, server_id, container):
@@ -264,7 +577,20 @@ def run_backup_task(client, action, payload, server_id, container):
         if was_running:
             container.stop(timeout=30)
         try:
-            item = create_server_backup(client, server_id, mountpoint)
+            label = str(payload.get('label', 'manual'))[:32]
+            item = create_server_backup(client, server_id, mountpoint, label=label)
+            retention = int(payload.get('retention', 100))
+            if not 1 <= retention <= 100:
+                raise ValueError('Backup retention must be between 1 and 100')
+            if label == 'scheduled':
+                scheduled = [entry for entry in list_server_backups(server_id) if entry.get('label') == 'scheduled']
+                for obsolete in scheduled[retention:]:
+                    candidate = (backup_directory(server_id) / (obsolete['id'] + '.tar.gz')).resolve()
+                    if candidate.parent == backup_directory(server_id).resolve() and candidate.is_file():
+                        candidate.unlink()
+                        (backup_directory(server_id) / (obsolete['id'] + '.json')).unlink(missing_ok=True)
+                    if obsolete.get('offsite'):
+                        _delete_backup_offsite(server_id, obsolete['id'])
         finally:
             if was_running:
                 container.start()
@@ -272,6 +598,397 @@ def run_backup_task(client, action, payload, server_id, container):
     if action == 'backup_restore':
         return restore_server_backup(client, server_id, container, mountpoint, payload.get('backup_id',''))
     raise ValueError('Unsupported backup operation')
+
+
+def run_mod_manager(client, server_id, container, payload):
+    kind = str(payload.get('kind', ''))
+    action = str(payload.get('action', ''))
+    if kind not in ('plugin', 'mod') or action not in ('list', 'install', 'remove'):
+        raise ValueError('Unsupported mod manager operation')
+    _, mountpoint = server_volume(client, server_id)
+    folder = 'plugins' if kind == 'plugin' else 'mods'
+    target_dir = (mountpoint / folder).resolve()
+    if target_dir.parent != mountpoint.resolve():
+        raise ValueError('Invalid managed directory')
+    target_dir.mkdir(mode=0o755, exist_ok=True)
+    if action == 'list':
+        return {'kind':kind,'files':[{'filename':p.name,'size_bytes':p.stat().st_size} for p in sorted(target_dir.glob('*.jar')) if p.is_file() and not p.is_symlink()][:200]}
+    filename = str(payload.get('filename') or '')
+    if not __import__('re').fullmatch(r'[A-Za-z0-9_. -]{1,120}\.jar', filename):
+        raise ValueError('Invalid JAR filename')
+    target = (target_dir / filename).resolve()
+    if target.parent != target_dir:
+        raise ValueError('Invalid JAR path')
+    was_running = container.status == 'running'
+    if was_running:
+        container.stop(timeout=30)
+    try:
+        if action == 'remove':
+            if not target.is_file() or target.is_symlink():
+                raise ValueError('JAR file does not exist')
+            target.unlink()
+            return {'kind':kind,'removed':filename,'files':[{'filename':p.name,'size_bytes':p.stat().st_size} for p in target_dir.glob('*.jar') if p.is_file() and not p.is_symlink()][:200]}
+        url = str(payload.get('url') or '')
+        allowed_hosts = {'cdn.modrinth.com','hangarcdn.papermc.io','mediafilez.forgecdn.net','edge.forgecdn.net'}
+        if not url.startswith('https://'):
+            raise ValueError('Only HTTPS downloads are accepted')
+        import urllib.parse
+        current = url
+        response = None
+        for _ in range(4):
+            parsed = urllib.parse.urlparse(current)
+            if parsed.scheme != 'https' or parsed.hostname not in allowed_hosts or parsed.username or parsed.password:
+                raise ValueError('Download host is not on the trusted Modrinth, Hangar, or CurseForge CDN allowlist')
+            response = requests.get(current, stream=True, timeout=(10,30), allow_redirects=False)
+            if response.is_redirect:
+                location = response.headers.get('Location')
+                response.close()
+                if not location:
+                    raise ValueError('Download redirect did not include a location')
+                current = urllib.parse.urljoin(current, location)
+                continue
+            response.raise_for_status()
+            break
+        else:
+            raise ValueError('Too many download redirects')
+        length = int(response.headers.get('Content-Length') or 0)
+        if length > 100 * 1024 * 1024:
+            response.close()
+            raise ValueError('JAR downloads are limited to 100 MB')
+        temporary = target_dir / ('.' + uuid.uuid4().hex + '.part')
+        total = 0
+        try:
+            with temporary.open('wb') as output:
+                for chunk in response.iter_content(1024 * 256):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > 100 * 1024 * 1024:
+                        raise ValueError('JAR download exceeded the 100 MB limit')
+                    output.write(chunk)
+            if not zipfile.is_zipfile(temporary):
+                raise ValueError('Downloaded file is not a valid Java archive')
+            with zipfile.ZipFile(temporary) as jar:
+                names = set(jar.namelist())
+                markers = {'plugin.yml','paper-plugin.yml'} if kind == 'plugin' else {'fabric.mod.json','quilt.mod.json','META-INF/mods.toml'}
+                if not any(name in names for name in markers):
+                    raise ValueError('JAR does not contain a recognized '+kind+' metadata file')
+                if len(names) > 50000 or sum(item.file_size for item in jar.infolist()) > 300 * 1024 * 1024:
+                    raise ValueError('JAR archive exceeds safety limits')
+            temporary.replace(target)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
+        finally:
+            response.close()
+        return {'kind':kind,'installed':filename,'bytes':total,'files':[{'filename':p.name,'size_bytes':p.stat().st_size} for p in target_dir.glob('*.jar') if p.is_file() and not p.is_symlink()][:200]}
+    finally:
+        if was_running:
+            container.start()
+
+
+def reconfigure_server_allocations(client, server_id, container, payload):
+    allocations = payload.get('allocations') or []
+    primary = next((item for item in allocations if int(item.get('container_port', 0)) == 25565 and item.get('protocol') == 'tcp'), None)
+    if primary is None or int(primary.get('port', 0)) != int(payload.get('primary_port', primary.get('port', 0))):
+        if primary is None:
+            raise ValueError('Primary Minecraft allocation is missing')
+    extra = [item for item in allocations if item is not primary]
+    if len(extra) > 10:
+        raise ValueError('Too many additional allocations')
+    _, mountpoint = server_volume(client, server_id)
+    was_running = container.status == 'running'
+    original_name = container.name
+    temporary_name = f'{original_name}-alloc-{uuid.uuid4().hex[:8]}'
+    if was_running:
+        container.stop(timeout=30)
+    replacement = None
+    try:
+        container.rename(temporary_name)
+        replacement = create_minecraft_container(client, server_id, str(payload.get('version','LATEST')),
+            int(payload.get('memory_mb',1024)), float(payload.get('cpu_limit',1)),
+            int(primary['port']), str(payload.get('server_type','paper')), extra)
+        if not was_running:
+            replacement.stop(timeout=30)
+        container.remove(force=True, v=False)
+        return {'docker_id':replacement.id,'data':{'status':'online' if was_running else 'offline','allocations':len(allocations)}}
+    except Exception:
+        if replacement is not None:
+            try:
+                replacement.remove(force=True, v=False)
+            except Exception:
+                log.exception('Could not remove failed allocation replacement for server %s', server_id)
+        try:
+            container.rename(original_name)
+            if was_running:
+                container.start()
+        except Exception:
+            log.exception('Could not restore server container after allocation reconfiguration failure')
+        raise
+
+
+
+def decrypt_node_secret(payload):
+    encoded = str(payload.get('password_encrypted') or '')
+    token = os.getenv('NODE_TOKEN', '')
+    if len(token) < 32 or not encoded:
+        raise RuntimeError('Encrypted node task credential is missing')
+    try:
+        raw = base64.urlsafe_b64decode(encoded.encode('ascii'))
+        key = __import__('hashlib').sha256(token.encode('utf-8')).digest()
+        return AESGCM(key).decrypt(raw[:12], raw[12:], None).decode('utf-8')
+    except Exception as exc:
+        raise RuntimeError('Could not decrypt the node task credential; check node token synchronization') from exc
+
+
+def ensure_sftp_network(client, server_id):
+    name = f'lighting-sftp-net-{int(server_id)}'
+    try:
+        network = client.networks.get(name)
+    except docker.errors.NotFound:
+        network = client.networks.create(name, driver='bridge',
+            labels={LABEL_OWNER:'true','net.lightingpanel.sftp-server-id':str(server_id)})
+    labels = network.attrs.get('Labels', {}) or {}
+    if labels.get(LABEL_OWNER) != 'true' or labels.get('net.lightingpanel.sftp-server-id') != str(server_id):
+        raise RuntimeError('SFTP network ownership validation failed')
+    return network
+
+def run_sftp_task(client, action, payload, server_id):
+    name = f'lighting-sftp-{int(server_id)}'
+    config_volume = f'lighting-sftp-config-{int(server_id)}'
+    if action == 'sftp_delete':
+        volume = None
+        container = None
+        try:
+            volume = client.volumes.get(config_volume)
+            labels = volume.attrs.get('Labels', {}) or {}
+            if labels.get(LABEL_OWNER) != 'true' or labels.get('net.lightingpanel.sftp-server-id') != str(server_id):
+                raise RuntimeError('Refusing to remove an unmanaged SFTP config volume')
+        except docker.errors.NotFound:
+            pass
+        try:
+            container = client.containers.get(name)
+            if container.labels.get(LABEL_OWNER) != 'true' or container.labels.get('net.lightingpanel.sftp-server-id') != str(server_id):
+                raise RuntimeError('Refusing to remove an unmanaged SFTP container')
+        except docker.errors.NotFound:
+            pass
+        if container is not None:
+            container.remove(force=True)
+        if volume is not None:
+            volume.remove(force=False)
+        try:
+            network = client.networks.get(f'lighting-sftp-net-{server_id}')
+            labels = network.attrs.get('Labels',{}) or {}
+            if labels.get(LABEL_OWNER) != 'true' or labels.get('net.lightingpanel.sftp-server-id') != str(server_id):
+                raise RuntimeError('Refusing to remove an unmanaged SFTP network')
+            network.remove()
+        except docker.errors.NotFound:
+            pass
+        return {'data':{'status':'removed'}}
+    if action != 'sftp_create':
+        raise ValueError('Unsupported SFTP operation')
+    server_volume(client, server_id)
+    port = int(payload.get('port',0))
+    username = str(payload.get('username',''))
+    password = decrypt_node_secret(payload)
+    if not 31000 <= port <= 31999 or not __import__('re').fullmatch(r'lpgp[0-9]{1,10}',username) or len(password) < 32:
+        raise ValueError('SFTP provisioning parameters are invalid')
+    sftp_network = ensure_sftp_network(client, server_id)
+    old_config = None
+    existing = None
+    try:
+        old_config = client.volumes.get(config_volume)
+        config_labels = old_config.attrs.get('Labels',{}) or {}
+        if config_labels.get(LABEL_OWNER) != 'true' or config_labels.get('net.lightingpanel.sftp-server-id') != str(server_id):
+            raise RuntimeError('SFTP config volume name collision; refusing to mount an unmanaged volume')
+    except docker.errors.NotFound:
+        pass
+    try:
+        existing = client.containers.get(name)
+        if existing.labels.get(LABEL_OWNER) != 'true' or existing.labels.get('net.lightingpanel.sftp-server-id') != str(server_id):
+            raise RuntimeError('SFTP container name collision; refusing to modify an unmanaged container')
+    except docker.errors.NotFound:
+        pass
+    if existing is not None:
+        existing.remove(force=True)
+    if old_config is not None:
+        old_config.remove(force=False)
+    config = client.volumes.create(name=config_volume,labels={LABEL_OWNER:'true','net.lightingpanel.sftp-server-id':str(server_id)})
+    config_labels = config.attrs.get('Labels',{}) or {}
+    if config_labels.get(LABEL_OWNER) != 'true' or config_labels.get('net.lightingpanel.sftp-server-id') != str(server_id):
+        raise RuntimeError('SFTP config volume ownership validation failed')
+    admin_user = 'lpgp-admin'
+    admin_password = __import__('hashlib').sha256((os.getenv('NODE_TOKEN','') + ':lpgp-sftp-admin:' + str(server_id)).encode()).hexdigest()
+    container = client.containers.run(
+        os.getenv('SFTPGO_IMAGE', 'drakkan/sftpgo:v2.7.6'),name=name,detach=True,
+        environment={
+            'SFTPGO_DEFAULT_ADMIN_USERNAME':admin_user,
+            'SFTPGO_DEFAULT_ADMIN_PASSWORD':admin_password,
+            'SFTPGO_DATA_PROVIDER__CREATE_DEFAULT_ADMIN':'true',
+            'SFTPGO_HTTPD__BINDINGS__0__ADDRESS':'0.0.0.0',
+            'SFTPGO_HTTPD__BINDINGS__0__PORT':'8080',
+            'SFTPGO_SFTPD__BINDINGS__0__ADDRESS':'0.0.0.0',
+            'SFTPGO_SFTPD__BINDINGS__0__PORT':'2022',
+            'SFTPGO_LOG_LEVEL':'info',
+        },
+        ports={'2022/tcp':('0.0.0.0',port)},network=sftp_network.name,
+        volumes={f'lighting-server-data-{server_id}':{'bind':'/srv/sftpgo/data','mode':'rw'},
+                 config_volume:{'bind':'/var/lib/sftpgo','mode':'rw'}},
+        labels={LABEL_OWNER:'true','net.lightingpanel.sftp-server-id':str(server_id)},
+        restart_policy={'Name':'unless-stopped'},mem_limit='256m',nano_cpus=250000000,pids_limit=256,
+        cap_drop=['NET_RAW','SYS_CHROOT','MKNOD'],security_opt=['no-new-privileges:true'])
+    try:
+        for _ in range(30):
+            container.reload()
+            networks = container.attrs.get('NetworkSettings',{}).get('Networks',{}) or {}
+            ip = next((item.get('IPAddress') for item in networks.values() if item.get('IPAddress')), '')
+            if ip:
+                try:
+                    token_response = requests.get(f'http://{ip}:8080/api/v2/token',auth=(admin_user,admin_password),timeout=(2,4))
+                    if token_response.ok:
+                        access_token = token_response.json().get('access_token')
+                        if access_token:
+                            user_response = requests.post(f'http://{ip}:8080/api/v2/users',
+                                headers={'Authorization':'Bearer '+access_token},
+                                json={'username':username,'password':password,'home_dir':'/srv/sftpgo/data',
+                                      'permissions':{'/':['*']},'status':1,'uid':1000,'gid':1000},
+                                timeout=(3,10))
+                            user_response.raise_for_status()
+                            return {'data':{'status':'active','port':port,'username':username}}
+                except requests.RequestException:
+                    pass
+            time.sleep(1)
+        raise RuntimeError('SFTPGo API did not become ready or could not create the SFTP account')
+    except Exception:
+        try:
+            container.remove(force=True)
+        except Exception:
+            pass
+        raise
+
+
+
+def wait_for_container_port(container, network, port, attempts=45):
+    for _ in range(attempts):
+        container.reload()
+        if container.status != 'running':
+            time.sleep(1)
+            continue
+        networks = container.attrs.get('NetworkSettings',{}).get('Networks',{}) or {}
+        address = (networks.get(network.name) or {}).get('IPAddress')
+        if address:
+            try:
+                with socket.create_connection((address, int(port)), timeout=2):
+                    return True
+            except OSError:
+                pass
+        time.sleep(1)
+    raise RuntimeError(f'Managed service did not open its internal TCP port {port} in time')
+
+def run_database_task(client, action, payload, server_id, server_container):
+    database_id = int(payload.get('database_id', 0))
+    if database_id <= 0:
+        raise ValueError('Database task has no valid database id')
+    name = f'lighting-db-{database_id}'
+    volume_name = f'lighting-db-data-{database_id}'
+    if action == 'database_delete':
+        volume = None
+        container = None
+        try:
+            volume = client.volumes.get(volume_name)
+            labels = volume.attrs.get('Labels',{}) or {}
+            if labels.get(LABEL_OWNER) != 'true' or labels.get('net.lightingpanel.database-id') != str(database_id) or labels.get('net.lightingpanel.server-id') != str(server_id):
+                raise RuntimeError('Refusing to remove an unmanaged database volume')
+        except docker.errors.NotFound:
+            pass
+        try:
+            container = client.containers.get(name)
+            if container.labels.get(LABEL_OWNER) != 'true' or container.labels.get('net.lightingpanel.database-id') != str(database_id) or container.labels.get('net.lightingpanel.server-id') != str(server_id):
+                raise RuntimeError('Refusing to remove an unmanaged database container')
+        except docker.errors.NotFound:
+            pass
+        if container is not None:
+            container.remove(force=True)
+        if volume is not None:
+            volume.remove(force=False)
+        return {'data':{'status':'removed'}}
+    network = ensure_server_network(client, server_id)
+    server_container.reload()
+    connected = server_container.attrs.get('NetworkSettings',{}).get('Networks',{}) or {}
+    if network.name not in connected:
+        network.connect(server_container, aliases=[f'lighting-server-{server_id}'])
+    if 'bridge' in connected:
+        try:
+            client.networks.get('bridge').disconnect(server_container, force=True)
+        except docker.errors.APIError:
+            pass
+    db_type = str(payload.get('db_type',''))
+    database_name = str(payload.get('database_name',''))
+    username = str(payload.get('username',''))
+    password = decrypt_node_secret(payload)
+    port = int(payload.get('port',0))
+    if db_type not in ('mariadb','postgres') or not __import__('re').fullmatch(r'[A-Za-z][A-Za-z0-9_]{2,47}',database_name) or not __import__('re').fullmatch(r'[A-Za-z][A-Za-z0-9_]{2,31}',username):
+        raise ValueError('Database type, name, or username is invalid')
+    if not 32000 <= port <= 32999 or len(password) < 40:
+        raise ValueError('Database port or password is invalid')
+    try:
+        existing = client.containers.get(name)
+        if existing.labels.get(LABEL_OWNER) != 'true' or existing.labels.get('net.lightingpanel.database-id') != str(database_id) or existing.labels.get('net.lightingpanel.server-id') != str(server_id):
+            raise RuntimeError('Database container name collision; refusing to modify an unmanaged container')
+        existing.reload()
+        db_networks = existing.attrs.get('NetworkSettings',{}).get('Networks',{}) or {}
+        if network.name not in db_networks:
+            network.connect(existing, aliases=[name])
+        internal_port = 3306 if db_type == 'mariadb' else 5432
+        wait_for_container_port(existing, network, internal_port)
+        return {'data':{'status':'active','internal_host':name,'internal_port':internal_port}}
+    except docker.errors.NotFound:
+        pass
+    db_volume = client.volumes.create(name=volume_name,labels={LABEL_OWNER:'true','net.lightingpanel.database-id':str(database_id),'net.lightingpanel.server-id':str(server_id)})
+    if db_volume.attrs.get('Labels',{}).get(LABEL_OWNER) != 'true' or db_volume.attrs.get('Labels',{}).get('net.lightingpanel.database-id') != str(database_id):
+        raise RuntimeError('Database volume ownership validation failed')
+    env = {'MARIADB_DATABASE':database_name,'MARIADB_USER':username,'MARIADB_PASSWORD':password,'MARIADB_ROOT_PASSWORD':secrets.token_urlsafe(36)} if db_type == 'mariadb' else {'POSTGRES_DB':database_name,'POSTGRES_USER':username,'POSTGRES_PASSWORD':password}
+    image = 'mariadb:11.4' if db_type == 'mariadb' else 'postgres:16-alpine'
+    internal_port = 3306 if db_type == 'mariadb' else 5432
+    container = client.containers.run(
+        image,name=name,detach=True,environment=env,
+        ports={f'{internal_port}/tcp':('0.0.0.0',port)},
+        volumes={volume_name:{'bind':'/var/lib/mysql' if db_type == 'mariadb' else '/var/lib/postgresql/data','mode':'rw'}},
+        network=network.name,mem_limit='384m',nano_cpus=250000000,pids_limit=256,
+        labels={LABEL_OWNER:'true','net.lightingpanel.database-id':str(database_id),'net.lightingpanel.server-id':str(server_id)},
+        restart_policy={'Name':'unless-stopped'},cap_drop=['NET_RAW','SYS_CHROOT','MKNOD'],
+        security_opt=['no-new-privileges:true'])
+    wait_for_container_port(container, network, internal_port)
+    return {'data':{'status':'active','internal_host':name,'internal_port':internal_port,'docker_id':container.id}}
+
+
+def cleanup_server_resources(client, server_id):
+    server_id = str(int(server_id))
+    for container in client.containers.list(all=True):
+        labels = container.labels or {}
+        belongs = labels.get('net.lightingpanel.server-id') == server_id or labels.get('net.lightingpanel.sftp-server-id') == server_id
+        if belongs and labels.get(LABEL_OWNER) == 'true':
+            try:
+                container.remove(force=True)
+            except docker.errors.NotFound:
+                pass
+    for volume in client.volumes.list():
+        labels = volume.attrs.get('Labels',{}) or {}
+        belongs = labels.get('net.lightingpanel.server-id') == server_id or labels.get('net.lightingpanel.sftp-server-id') == server_id
+        if belongs and labels.get(LABEL_OWNER) == 'true':
+            try:
+                volume.remove(force=False)
+            except docker.errors.APIError as exc:
+                log.warning('Could not remove managed volume %s for server %s: %s',volume.name,server_id,exc)
+    for network_name, label_key in ((f'lighting-server-net-{server_id}','net.lightingpanel.server-id'),(f'lighting-sftp-net-{server_id}','net.lightingpanel.sftp-server-id')):
+        try:
+            network = client.networks.get(network_name)
+            labels = network.attrs.get('Labels',{}) or {}
+            if labels.get(LABEL_OWNER) == 'true' and labels.get(label_key) == server_id:
+                network.remove()
+        except docker.errors.NotFound:
+            pass
+    return {'docker_id':None}
 
 def run_task(client, task):
     action = task.get('action')
@@ -287,6 +1004,9 @@ def run_task(client, task):
         memory_mb = int(payload.get('memory_mb', 0))
         cpu_limit = float(payload.get('cpu_limit', 0))
         port = int(payload.get('port', 0))
+        server_type = str(payload.get('server_type', 'paper')).lower()
+        if server_type not in ('paper','fabric','forge'):
+            raise ValueError('Unsupported Minecraft server type')
         if not 512 <= memory_mb <= 16384 or not 0.5 <= cpu_limit <= 16 or not 25565 <= port <= 25999:
             raise ValueError('Server resource or port values are outside allowed limits')
         try:
@@ -295,44 +1015,43 @@ def run_task(client, task):
                 raise RuntimeError('Container name collision; refusing to modify an unmanaged container')
             if existing.status != 'running':
                 existing.start()
+            network = ensure_server_network(client, server_id)
+            existing.reload()
+            connected = existing.attrs.get('NetworkSettings',{}).get('Networks',{}) or {}
+            if network.name not in connected:
+                network.connect(existing, aliases=[f'lighting-server-{server_id}'])
+            if 'bridge' in connected:
+                try:
+                    client.networks.get('bridge').disconnect(existing, force=True)
+                except docker.errors.APIError:
+                    pass
             return {'docker_id': existing.id}
         except docker.errors.NotFound:
             pass
         volume = f'lighting-server-data-{server_id}'
         client.volumes.create(name=volume, labels={LABEL_OWNER:'true','net.lightingpanel.server-id':str(server_id)})
-        container = client.containers.run(
-            IMAGE,
-            name=name,
-            detach=True,
-            environment={'EULA':'TRUE','TYPE':'PAPER','VERSION':version,'MEMORY':f'{int(memory_mb * 0.8)}M','TZ':'UTC'},
-            ports={'25565/tcp':('0.0.0.0',port)},
-            volumes={volume:{'bind':'/data','mode':'rw'}},
-            mem_limit=f'{memory_mb}m',
-            nano_cpus=int(cpu_limit * 1_000_000_000),
-            pids_limit=512,
-            init=True,
-            tty=True,
-            stdin_open=True,
-            labels={LABEL_OWNER:'true','net.lightingpanel.server-id':str(server_id)},
-            restart_policy={'Name':'unless-stopped'},
-            cap_drop=['NET_RAW','SYS_CHROOT','MKNOD'],
-            security_opt=['no-new-privileges:true'],
-        )
+        container = create_minecraft_container(client, server_id, version, memory_mb, cpu_limit, port, server_type)
         return {'docker_id':container.id}
     try:
         container = client.containers.get(name)
     except docker.errors.NotFound:
         if action == 'delete':
-            try:
-                volume = client.volumes.get(f'lighting-server-data-{server_id}')
-                if volume.attrs.get('Labels', {}).get(LABEL_OWNER) == 'true':
-                    volume.remove(force=False)
-            except docker.errors.NotFound:
-                pass
-            return {'docker_id':None}
+            return cleanup_server_resources(client, server_id)
+        if action == 'sftp_delete':
+            return run_sftp_task(client, action, payload, server_id)
+        if action == 'database_delete':
+            return run_database_task(client, action, payload, server_id, None)
         raise RuntimeError('Managed server container does not exist')
     if container.labels.get(LABEL_OWNER) != 'true' or container.labels.get('net.lightingpanel.server-id') != str(server_id):
         raise RuntimeError('Refusing to operate on a container not owned by Lighting Panel')
+    if action in ('sftp_create','sftp_delete'):
+        return run_sftp_task(client, action, payload, server_id)
+    if action in ('database_create','database_delete'):
+        return run_database_task(client, action, payload, server_id, container)
+    if action == 'allocation_update':
+        return reconfigure_server_allocations(client, server_id, container, payload)
+    if action == 'mod_manager':
+        return {'data':run_mod_manager(client, server_id, container, payload)}
     if action in ('backup_create','backup_list','backup_restore'):
         return {'data':run_backup_task(client, action, payload, server_id, container)}
     if action == 'version_upgrade':
@@ -351,14 +1070,7 @@ def run_task(client, task):
     elif action == 'restart':
         container.restart(timeout=30)
     elif action == 'delete':
-        container.remove(force=True)
-        try:
-            volume = client.volumes.get(f'lighting-server-data-{server_id}')
-            if volume.attrs.get('Labels', {}).get(LABEL_OWNER) == 'true':
-                volume.remove(force=False)
-        except docker.errors.NotFound:
-            pass
-        return {'docker_id':None}
+        return cleanup_server_resources(client, server_id)
     else:
         raise ValueError('Unsupported node task action')
     return {'docker_id':container.id}
@@ -390,8 +1102,18 @@ def main():
                     log.info('Completed node task %s (%s)', task['id'], task['action'])
                 except Exception as exc:
                     log.exception('Node task %s failed', task.get('id'))
+                    failure = {'error':str(exc)[:950]}
+                    if task.get('action') in ('version_upgrade','allocation_update'):
+                        failed_server_id = int((task.get('payload') or {}).get('server_id') or task.get('server_id') or 0)
+                        if failed_server_id > 0:
+                            try:
+                                recovered = client.containers.get(container_name(failed_server_id))
+                                if recovered.labels.get(LABEL_OWNER) == 'true' and recovered.labels.get('net.lightingpanel.server-id') == str(failed_server_id):
+                                    failure['data'] = {'status':'online' if recovered.status == 'running' else 'offline'}
+                            except docker.errors.NotFound:
+                                pass
                     try:
-                        report_result(session, endpoint, task['id'], {'error':str(exc)[:950]})
+                        report_result(session, endpoint, task['id'], failure)
                     except requests.RequestException:
                         log.exception('Could not report task failure')
         except requests.RequestException as exc:
