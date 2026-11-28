@@ -152,10 +152,120 @@ def backup_directory(server_id):
     directory.chmod(0o700)
     return directory
 
+def _database_volumes(client, server_id):
+    server_id = str(int(server_id))
+    output = {}
+    for volume in client.volumes.list():
+        labels = volume.attrs.get('Labels', {}) or {}
+        database_id = labels.get('net.lightingpanel.database-id')
+        if labels.get(LABEL_OWNER) != 'true' or labels.get('net.lightingpanel.server-id') != server_id or not database_id:
+            continue
+        mountpoint = Path(volume.attrs.get('Mountpoint', '')).resolve()
+        if not mountpoint.is_dir():
+            raise RuntimeError(f'Database volume {volume.name} mountpoint is unavailable')
+        output[str(database_id)] = (volume, mountpoint)
+    return output
+
+
+def _database_containers(client, server_id):
+    server_id = str(int(server_id))
+    output = []
+    for container in client.containers.list(all=True):
+        labels = container.labels or {}
+        if labels.get(LABEL_OWNER) == 'true' and labels.get('net.lightingpanel.server-id') == server_id and labels.get('net.lightingpanel.database-id'):
+            output.append(container)
+    return output
+
+
+def _s3_backup_config():
+    bucket = os.getenv('BACKUP_S3_BUCKET', '').strip()
+    if not bucket:
+        return None
+    endpoint = os.getenv('BACKUP_S3_ENDPOINT_URL', '').strip() or None
+    if endpoint:
+        import urllib.parse
+        parsed = urllib.parse.urlparse(endpoint)
+        if parsed.scheme != 'https' and parsed.hostname not in ('localhost', '127.0.0.1', '::1'):
+            raise RuntimeError('BACKUP_S3_ENDPOINT_URL must use HTTPS')
+        if parsed.username or parsed.password:
+            raise RuntimeError('Do not put object-storage credentials in BACKUP_S3_ENDPOINT_URL')
+    prefix = os.getenv('BACKUP_S3_PREFIX', 'lpgp-backups').strip('/ ')
+    if not prefix or '..' in Path(prefix).parts:
+        raise RuntimeError('BACKUP_S3_PREFIX is invalid')
+    import boto3
+    client = boto3.client('s3', endpoint_url=endpoint, region_name=os.getenv('BACKUP_S3_REGION', 'us-east-1'))
+    return client, bucket, prefix
+
+
+def _s3_backup_key(prefix, server_id, backup_id):
+    return f'{prefix}/{int(server_id)}/{backup_id}.tar.gz'
+
+
+def _upload_backup_offsite(server_id, backup_id, archive_path, label):
+    config = _s3_backup_config()
+    if config is None:
+        return False
+    client, bucket, prefix = config
+    client.upload_file(str(archive_path), bucket, _s3_backup_key(prefix, server_id, backup_id),
+        ExtraArgs={'Metadata': {'server-id': str(int(server_id)), 'backup-id': backup_id, 'label': str(label)[:32]}})
+    return True
+
+
+def _download_backup_offsite(server_id, backup_id, target):
+    config = _s3_backup_config()
+    if config is None:
+        return False
+    client, bucket, prefix = config
+    key = _s3_backup_key(prefix, server_id, backup_id)
+    try:
+        client.head_object(Bucket=bucket, Key=key)
+    except Exception as exc:
+        response = getattr(exc, 'response', {}) or {}
+        code = str(response.get('Error', {}).get('Code', ''))
+        if code in ('404', 'NoSuchKey', 'NotFound'):
+            return False
+        raise
+    temporary = target.with_name('.' + target.name + '.download')
+    try:
+        client.download_file(bucket, key, str(temporary))
+        if not tarfile.is_tarfile(temporary):
+            raise RuntimeError('Offsite backup object is not a valid tar archive')
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return True
+
+
+def _delete_backup_offsite(server_id, backup_id):
+    config = _s3_backup_config()
+    if config is None:
+        return
+    client, bucket, prefix = config
+    client.delete_object(Bucket=bucket, Key=_s3_backup_key(prefix, server_id, backup_id))
+
+
+def _write_backup_metadata(directory, backup_id, label, database_count, offsite):
+    target = directory / f'{backup_id}.json'
+    temporary = directory / f'.{backup_id}.json.tmp'
+    temporary.write_text(json.dumps({'label':str(label)[:32], 'database_count':int(database_count), 'offsite':bool(offsite)}))
+    temporary.chmod(0o600)
+    temporary.replace(target)
+
+
 def create_server_backup(client, server_id, mountpoint, label='manual'):
-    total = sum(p.stat().st_size for p in mountpoint.rglob('*') if p.is_file() and not p.is_symlink())
+    db_volumes = _database_volumes(client, server_id)
+    db_containers = _database_containers(client, server_id)
+    was_running = []
+    for container in db_containers:
+        if container.status == 'running':
+            container.stop(timeout=30)
+            was_running.append(container)
+    total = sum(p.stat().st_size for root in [mountpoint] + [entry[1] for entry in db_volumes.values()]
+        for p in root.rglob('*') if p.is_file() and not p.is_symlink())
     if total > MAX_BACKUP_BYTES:
-        raise ValueError('Server data exceeds the 20 GiB per-backup safety limit')
+        for container in was_running:
+            container.start()
+        raise ValueError('Server and managed database data exceed the 20 GiB per-backup safety limit')
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     backup_id = f'{stamp}-{uuid.uuid4().hex[:10]}'
     directory = backup_directory(server_id)
@@ -171,54 +281,173 @@ def create_server_backup(client, server_id, mountpoint, label='manual'):
                     item = root_path / filename
                     if not item.is_symlink() and item.is_file():
                         archive.add(item, arcname=item.relative_to(mountpoint).as_posix(), recursive=False)
+            for database_id, (_, db_mountpoint) in sorted(db_volumes.items(), key=lambda item: int(item[0])):
+                archive.add(db_mountpoint, arcname=f'__lpgp_databases__/{database_id}', recursive=True, filter=lambda info: None if info.issym() or info.islnk() or info.isdev() or info.isfifo() else info)
         temporary.replace(target)
+        offsite = _upload_backup_offsite(server_id, backup_id, target, label)
+        _write_backup_metadata(directory, backup_id, label, len(db_volumes), offsite)
     except Exception:
         temporary.unlink(missing_ok=True)
+        target.unlink(missing_ok=True)
+        (directory / f'{backup_id}.json').unlink(missing_ok=True)
         raise
-    return {'id':backup_id,'filename':target.name,'size_bytes':target.stat().st_size,'created_at':stamp,'label':label}
+    finally:
+        for container in was_running:
+            try:
+                container.start()
+            except Exception:
+                log.exception('Could not restart database container %s after backup', container.name)
+    return {'id':backup_id,'filename':target.name,'size_bytes':target.stat().st_size,'created_at':stamp,'label':label,
+        'database_count':len(db_volumes),'offsite':offsite}
+
 
 def list_server_backups(server_id):
     directory = backup_directory(server_id)
-    output = []
+    output = {}
     for item in sorted(directory.glob('*.tar.gz'), key=lambda p:p.name, reverse=True)[:100]:
         backup_id = item.name[:-7]
         if not __import__('re').fullmatch(r'\d{8}T\d{6}Z-[a-f0-9]{10}', backup_id):
             continue
-        output.append({'id':backup_id,'filename':item.name,'size_bytes':item.stat().st_size,'created_at':backup_id[:16]})
-    return output
+        metadata = {}
+        metadata_path = directory / f'{backup_id}.json'
+        if metadata_path.is_file():
+            try:
+                metadata = json.loads(metadata_path.read_text())
+            except (OSError, ValueError):
+                metadata = {}
+        output[backup_id] = {'id':backup_id,'filename':item.name,'size_bytes':item.stat().st_size,
+            'created_at':backup_id[:16],'label':metadata.get('label','manual'),
+            'database_count':int(metadata.get('database_count',0)),'offsite':bool(metadata.get('offsite',False))}
+    config = _s3_backup_config()
+    if config is not None:
+        client, bucket, prefix = config
+        paginator = client.get_paginator('list_objects_v2')
+        for page in paginator.paginate(Bucket=bucket, Prefix=f'{prefix}/{int(server_id)}/'):
+            for obj in page.get('Contents', []):
+                key = obj.get('Key', '')
+                backup_id = key.rsplit('/',1)[-1][:-7] if key.endswith('.tar.gz') else ''
+                if not __import__('re').fullmatch(r'\d{8}T\d{6}Z-[a-f0-9]{10}', backup_id):
+                    continue
+                if backup_id in output:
+                    output[backup_id]['offsite'] = True
+                    continue
+                try:
+                    metadata = client.head_object(Bucket=bucket, Key=key).get('Metadata', {})
+                except Exception:
+                    metadata = {}
+                output[backup_id] = {'id':backup_id,'filename':backup_id+'.tar.gz','size_bytes':int(obj.get('Size',0)),
+                    'created_at':backup_id[:16],'label':metadata.get('label','manual'),'database_count':0,'offsite':True}
+    return sorted(output.values(), key=lambda item:item['id'], reverse=True)[:100]
+
+
+def _clear_directory(path):
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+    for child in path.iterdir():
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
+def _validate_backup_members(members):
+    for member in members:
+        name = Path(member.name)
+        if name.is_absolute() or '..' in name.parts or member.issym() or member.islnk() or member.isdev() or member.isfifo():
+            raise ValueError('Backup contains an unsafe archive entry')
+        if not (member.isdir() or member.isfile()):
+            raise ValueError('Backup contains an unsupported archive entry')
+
+
+def _extract_regular_members(archive, members, destination, strip_parts=0):
+    destination = Path(destination).resolve()
+    for member in members:
+        parts = Path(member.name).parts[strip_parts:]
+        if not parts:
+            continue
+        target = (destination.joinpath(*parts)).resolve()
+        if not target.is_relative_to(destination):
+            raise ValueError('Backup extraction path escaped its destination')
+        if member.isdir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source = archive.extractfile(member)
+        if source is None:
+            raise ValueError('Backup file data is missing')
+        with source, target.open('wb') as output:
+            shutil.copyfileobj(source, output, length=1024*1024)
+        target.chmod(member.mode & 0o777)
+
+
+def _apply_backup_archive(client, server_id, archive_path, mountpoint, db_volumes):
+    with tarfile.open(archive_path, 'r:gz') as archive:
+        members = archive.getmembers()
+        _validate_backup_members(members)
+        db_groups = {}
+        server_members = []
+        for member in members:
+            parts = Path(member.name).parts
+            if parts and parts[0] == '__lpgp_databases__':
+                if len(parts) < 2 or not parts[1].isdigit():
+                    raise ValueError('Backup contains an invalid database volume identifier')
+                db_groups.setdefault(parts[1], []).append(member)
+            else:
+                server_members.append(member)
+        for database_id in db_groups:
+            if database_id not in db_volumes:
+                raise ValueError(f'Backup includes database {database_id}, but its managed volume is missing')
+        _clear_directory(mountpoint)
+        _extract_regular_members(archive, server_members, mountpoint)
+        for database_id, group in db_groups.items():
+            destination = db_volumes[database_id][1]
+            _clear_directory(destination)
+            _extract_regular_members(archive, group, destination, strip_parts=2)
+    return {'database_count':len(db_groups)}
+
 
 def restore_server_backup(client, server_id, container, mountpoint, backup_id):
     if not __import__('re').fullmatch(r'\d{8}T\d{6}Z-[a-f0-9]{10}', str(backup_id)):
         raise ValueError('Invalid backup identifier')
     directory = backup_directory(server_id).resolve()
     archive_path = (directory / (str(backup_id)+'.tar.gz')).resolve()
-    if archive_path.parent != directory or not archive_path.is_file():
-        raise ValueError('Backup does not exist on this node')
-    with tarfile.open(archive_path, 'r:gz') as archive:
-        members = archive.getmembers()
-        for member in members:
-            name = Path(member.name)
-            if name.is_absolute() or '..' in name.parts or member.issym() or member.islnk() or member.isdev() or member.isfifo():
-                raise ValueError('Backup contains an unsafe archive entry')
+    if archive_path.parent != directory:
+        raise ValueError('Invalid backup path')
+    if not archive_path.is_file():
+        if not _download_backup_offsite(server_id, str(backup_id), archive_path):
+            raise ValueError('Backup does not exist locally or in configured offsite storage')
+    db_volumes = _database_volumes(client, server_id)
+    db_containers = _database_containers(client, server_id)
     was_running = container.status == 'running'
+    db_was_running = []
+    for db_container in db_containers:
+        if db_container.status == 'running':
+            db_container.stop(timeout=30)
+            db_was_running.append(db_container)
     if was_running:
         container.stop(timeout=30)
+    pre_restore = None
     try:
-        create_server_backup(client, server_id, mountpoint, label='pre-restore')
-        for child in mountpoint.iterdir():
-            if child.is_dir() and not child.is_symlink():
-                shutil.rmtree(child)
-            else:
-                child.unlink()
-        with tarfile.open(archive_path, 'r:gz') as archive:
-            archive.extractall(mountpoint, members=members)
-    except Exception:
+        pre_restore = create_server_backup(client, server_id, mountpoint, label='pre-restore')
+        _apply_backup_archive(client, server_id, archive_path, mountpoint, db_volumes)
+    except Exception as restore_error:
+        if pre_restore:
+            try:
+                _apply_backup_archive(client, server_id, backup_directory(server_id) / pre_restore['filename'], mountpoint, db_volumes)
+            except Exception as rollback_error:
+                raise RuntimeError(f'Restore failed ({restore_error}); automatic rollback also failed ({rollback_error}). Keep the pre-restore snapshot for manual recovery.') from restore_error
+        raise
+    finally:
+        for db_container in db_was_running:
+            try:
+                db_container.start()
+            except Exception:
+                log.exception('Could not restart database container %s after restore', db_container.name)
         if was_running:
             container.start()
-        raise
-    if was_running:
-        container.start()
-    return {'restored_backup':backup_id,'previous_state':'running' if was_running else 'stopped'}
+    return {'restored_backup':backup_id,'previous_state':'running' if was_running else 'stopped',
+        'database_count':len(db_volumes)}
+
 
 
 def ensure_server_network(client, server_id):
@@ -298,11 +527,14 @@ def run_backup_task(client, action, payload, server_id, container):
             if not 1 <= retention <= 100:
                 raise ValueError('Backup retention must be between 1 and 100')
             if label == 'scheduled':
-                backups = list_server_backups(server_id)
-                for obsolete in backups[retention:]:
+                scheduled = [entry for entry in list_server_backups(server_id) if entry.get('label') == 'scheduled']
+                for obsolete in scheduled[retention:]:
                     candidate = (backup_directory(server_id) / (obsolete['id'] + '.tar.gz')).resolve()
                     if candidate.parent == backup_directory(server_id).resolve() and candidate.is_file():
                         candidate.unlink()
+                        (backup_directory(server_id) / (obsolete['id'] + '.json')).unlink(missing_ok=True)
+                    if obsolete.get('offsite'):
+                        _delete_backup_offsite(server_id, obsolete['id'])
         finally:
             if was_running:
                 container.start()
@@ -464,7 +696,8 @@ def run_sftp_task(client, action, payload, server_id):
             pass
         try:
             volume = client.volumes.get(config_volume)
-            if volume.attrs.get('Labels', {}).get(LABEL_OWNER) == 'true':
+            labels = volume.attrs.get('Labels', {}) or {}
+            if labels.get(LABEL_OWNER) == 'true' and labels.get('net.lightingpanel.sftp-server-id') == str(server_id):
                 volume.remove(force=False)
         except docker.errors.NotFound:
             pass
@@ -501,7 +734,7 @@ def run_sftp_task(client, action, payload, server_id):
     admin_user = 'lpgp-admin'
     admin_password = __import__('hashlib').sha256((os.getenv('NODE_TOKEN','') + ':lpgp-sftp-admin:' + str(server_id)).encode()).hexdigest()
     container = client.containers.run(
-        'drakkan/sftpgo:latest',name=name,detach=True,
+        os.getenv('SFTPGO_IMAGE', 'drakkan/sftpgo:v2.7.6'),name=name,detach=True,
         environment={
             'SFTPGO_DEFAULT_ADMIN_USERNAME':admin_user,
             'SFTPGO_DEFAULT_ADMIN_PASSWORD':admin_password,
