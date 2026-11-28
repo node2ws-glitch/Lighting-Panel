@@ -793,6 +793,7 @@ def run_sftp_task(client, action, payload, server_id):
     password = decrypt_node_secret(payload)
     if not 31000 <= port <= 31999 or not __import__('re').fullmatch(r'lpgp[0-9]{1,10}',username) or len(password) < 32:
         raise ValueError('SFTP provisioning parameters are invalid')
+    sftp_network = ensure_sftp_network(client, server_id)
     old_config = None
     existing = None
     try:
@@ -816,7 +817,6 @@ def run_sftp_task(client, action, payload, server_id):
     config_labels = config.attrs.get('Labels',{}) or {}
     if config_labels.get(LABEL_OWNER) != 'true' or config_labels.get('net.lightingpanel.sftp-server-id') != str(server_id):
         raise RuntimeError('SFTP config volume ownership validation failed')
-    sftp_network = ensure_sftp_network(client, server_id)
     admin_user = 'lpgp-admin'
     admin_password = __import__('hashlib').sha256((os.getenv('NODE_TOKEN','') + ':lpgp-sftp-admin:' + str(server_id)).encode()).hexdigest()
     container = client.containers.run(
