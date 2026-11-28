@@ -177,6 +177,18 @@ def _database_containers(client, server_id):
     return output
 
 
+def _backup_related_containers(client, server_id):
+    server_id = str(int(server_id))
+    output = []
+    for container in client.containers.list(all=True):
+        labels = container.labels or {}
+        database_container = labels.get('net.lightingpanel.server-id') == server_id and labels.get('net.lightingpanel.database-id')
+        sftp_container = labels.get('net.lightingpanel.sftp-server-id') == server_id
+        if labels.get(LABEL_OWNER) == 'true' and (database_container or sftp_container):
+            output.append(container)
+    return output
+
+
 def _s3_backup_config():
     bucket = os.getenv('BACKUP_S3_BUCKET', '').strip()
     if not bucket:
@@ -254,7 +266,7 @@ def _write_backup_metadata(directory, backup_id, label, database_count, offsite)
 
 def create_server_backup(client, server_id, mountpoint, label='manual'):
     db_volumes = _database_volumes(client, server_id)
-    db_containers = _database_containers(client, server_id)
+    db_containers = _backup_related_containers(client, server_id)
     was_running = []
     try:
         for container in db_containers:
@@ -437,7 +449,7 @@ def restore_server_backup(client, server_id, container, mountpoint, backup_id):
         if not _download_backup_offsite(server_id, str(backup_id), archive_path):
             raise ValueError('Backup does not exist locally or in configured offsite storage')
     db_volumes = _database_volumes(client, server_id)
-    db_containers = _database_containers(client, server_id)
+    db_containers = _backup_related_containers(client, server_id)
     was_running = container.status == 'running'
     db_was_running = []
     for db_container in db_containers:
